@@ -62,7 +62,7 @@ router.post('/signup', async (req, res, next) => {
       email: email.toLowerCase().trim(),
       passwordHash,
       churchName: churchName.trim(),
-      role: 'user',
+      role: 'church_admin',
       graceExpiresAt,
     });
 
@@ -322,6 +322,192 @@ router.get('/me', authMiddleware, async (req, res) => {
       createdAt: req.user.createdAt,
     },
   });
+});
+
+
+/**
+ * GET /auth/users
+ * Admin endpoint to list all users
+ */
+router.get("/users", async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const users = await User.find({}).sort({ createdAt: -1 });
+    res.json({
+      success: true,
+      count: users.length,
+      users: users.map(u => ({
+        id: u.id,
+        name: u.name || u.email.split("@")[0],
+        email: u.email,
+        church: u.churchName,
+        role: u.role || "user",
+        joined: u.createdAt ? new Date(u.createdAt).toISOString().split("T")[0] : "2026-08-22",
+        lastLogin: "Active",
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /auth/users
+ * Admin endpoint to create new users
+ */
+router.post("/users", async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { name, email, password, churchName, role = "user" } = req.body;
+
+    if (!email || !password || !churchName) {
+      return res.status(400).json({
+        error: "missing_fields",
+        message: "Email, password, and church name are required",
+      });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    const existing = await User.findOne({ email: cleanEmail });
+    if (existing) {
+      return res.status(409).json({
+        error: "email_exists",
+        message: "An account with this email already exists",
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const graceExpiresAt = User.computeGraceExpiry(24); // 2 years
+
+    const newUser = await User.create({
+      email: cleanEmail,
+      passwordHash,
+      churchName: churchName.trim(),
+      role: role === "admin" ? "admin" : "user",
+      graceExpiresAt,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "User created successfully",
+      user: {
+        id: newUser.id,
+        name: name || cleanEmail.split("@")[0],
+        email: newUser.email,
+        church: newUser.churchName,
+        role: newUser.role,
+        joined: new Date().toISOString().split("T")[0],
+        lastLogin: "Never",
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+/**
+ * GET /auth/license
+ * Returns church admin license details, active devices, and sharing quotas (max 2 desktops, max 5 mobile).
+ */
+router.get("/license", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: "user_not_found", message: "User not found" });
+    }
+
+    res.json({
+      success: true,
+      license: {
+        churchName: user.churchName,
+        role: user.role,
+        roleTitle: user.role === "super_admin" ? "Platform Master Admin" : (user.role === "church_admin" ? "Church Organization Admin" : "Team Member"),
+        isChurchAdmin: user.role === "church_admin" || user.role === "super_admin",
+        graceExpiresAt: user.graceExpiresAt,
+        quotas: {
+          maxDesktops: user.licenseQuotas?.maxDesktops || 2,
+          activeDesktopsCount: user.licenseQuotas?.activeDesktops?.length || 0,
+          maxMobileUsers: user.licenseQuotas?.maxMobileUsers || 5,
+          activeMobileUsersCount: user.licenseQuotas?.activeMobileUsers?.length || 0,
+        },
+        activeDesktops: user.licenseQuotas?.activeDesktops || [],
+        activeMobileUsers: user.licenseQuotas?.activeMobileUsers || [],
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /auth/device/register
+ * Registers a desktop or mobile device under the church license (max 2 desktops, max 5 mobile).
+ */
+router.post("/device/register", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { deviceId, name, platform } = req.body; // platform: "desktop" | "mobile"
+
+    if (!deviceId || !platform) {
+      return res.status(400).json({ error: "missing_fields", message: "deviceId and platform are required" });
+    }
+
+    const user = await User.findById(req.user.id);
+    const quotas = user.licenseQuotas || { maxDesktops: 2, maxMobileUsers: 5, activeDesktops: [], activeMobileUsers: [] };
+
+    if (platform === "desktop") {
+      const exists = quotas.activeDesktops.find(d => d.deviceId === deviceId);
+      if (!exists) {
+        if (quotas.activeDesktops.length >= (quotas.maxDesktops || 2)) {
+          return res.status(403).json({
+            error: "desktop_quota_exceeded",
+            message: "Desktop device limit reached (Maximum 2 desktop apps per church license). Please unbind a previous station.",
+          });
+        }
+        quotas.activeDesktops.push({
+          deviceId,
+          name: name || "Sanctuary Display Station",
+          platform: "desktop",
+          registeredAt: new Date(),
+          lastActiveAt: new Date(),
+        });
+      } else {
+        exists.lastActiveAt = new Date();
+      }
+    } else if (platform === "mobile") {
+      const exists = quotas.activeMobileUsers.find(m => m.deviceId === deviceId);
+      if (!exists) {
+        if (quotas.activeMobileUsers.length >= (quotas.maxMobileUsers || 5)) {
+          return res.status(403).json({
+            error: "mobile_quota_exceeded",
+            message: "Mobile companion limit reached (Maximum 5 mobile users per church license).",
+          });
+        }
+        quotas.activeMobileUsers.push({
+          deviceId,
+          name: name || "Worship Stage Device",
+          platform: "mobile",
+          registeredAt: new Date(),
+          lastActiveAt: new Date(),
+        });
+      } else {
+        exists.lastActiveAt = new Date();
+      }
+    }
+
+    user.licenseQuotas = quotas;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Device registered successfully",
+      license: user.licenseQuotas,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 module.exports = router;

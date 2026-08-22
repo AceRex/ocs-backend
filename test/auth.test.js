@@ -23,7 +23,7 @@ describe('Auth Endpoints (/api/auth)', () => {
       expect(res.body.user).toBeDefined();
       expect(res.body.user.email).toBe(testUser.email.toLowerCase());
       expect(res.body.user.churchName).toBe(testUser.churchName);
-      expect(res.body.user.role).toBe('user');
+      expect(res.body.user.role).toBe('church_admin');
       expect(res.body.user.passwordHash).toBeUndefined(); // Guardrail: never return hash
 
       // Verify graceExpiresAt is approx 3 months in future
