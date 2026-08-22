@@ -6,6 +6,7 @@ const authRoutes = require('./routes/auth');
 const downloadRoutes = require('./routes/downloads');
 const testimonialRoutes = require('./routes/testimonials');
 const ticketRoutes = require('./routes/tickets');
+const faqRoutes = require('./routes/faqs');
 
 const app = express();
 
@@ -41,6 +42,9 @@ app.use('/', testimonialRoutes);
 
 app.use('/api', ticketRoutes);
 app.use('/', ticketRoutes);
+
+app.use('/api', faqRoutes);
+app.use('/', faqRoutes);
 
 // Handle 404 for unhandled routes
 app.use((req, res) => {
