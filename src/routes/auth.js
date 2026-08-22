@@ -10,63 +10,64 @@ const { connectToDatabase } = require('../config/db');
 
 const router = express.Router();
 
+
 /**
- * POST /auth/signup
- * Register a new organization / church account.
- * Automatically computes graceExpiresAt based on GRACE_PERIOD_MONTHS.
+ * POST /auth/register and POST /auth/signup
+ * Register a general user / church organization account.
  */
-router.post('/signup', async (req, res, next) => {
+const handleGeneralRegister = async (req, res, next) => {
   try {
     await connectToDatabase();
-    const { email, password, churchName } = req.body;
+    const { name, email, password, churchName, role } = req.body;
 
-    // Validation
-    if (!email || !password || !churchName) {
+    if (!email || !password) {
       return res.status(400).json({
-        error: 'missing_fields',
-        message: 'Email, password, and church name are required',
+        error: "missing_fields",
+        message: "Email and password are required",
       });
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({
-        error: 'invalid_email',
-        message: 'Please provide a valid email address',
+        error: "invalid_email",
+        message: "Please provide a valid email address",
       });
     }
 
-    if (typeof password !== 'string' || password.length < 8) {
+    if (typeof password !== "string" || password.length < 8) {
       return res.status(400).json({
-        error: 'weak_password',
-        message: 'Password must be at least 8 characters long',
+        error: "weak_password",
+        message: "Password must be at least 8 characters long",
       });
     }
 
-    // Check duplicate
     const existing = await User.findOne({ email: email.toLowerCase().trim() });
     if (existing) {
       return res.status(409).json({
-        error: 'email_exists',
-        message: 'An account with this email address already exists',
+        error: "email_exists",
+        message: "An account with this email address already exists",
       });
     }
 
-    // Hash password with bcrypt
     const passwordHash = await bcrypt.hash(password, 10);
-
-    // Compute graceExpiresAt (e.g. 3 months from now)
     const graceExpiresAt = User.computeGraceExpiry(env.GRACE_PERIOD_MONTHS);
 
     const user = await User.create({
+      name: name?.trim() || email.split("@")[0],
       email: email.toLowerCase().trim(),
       passwordHash,
-      churchName: churchName.trim(),
-      role: 'church_admin',
+      churchName: (churchName || "Community Church").trim(),
+      role: role === "user" ? "user" : "church_admin",
       graceExpiresAt,
+      licenseQuotas: {
+        maxDesktops: 2,
+        maxMobileUsers: 5,
+        activeDesktops: [],
+        activeMobileUsers: [],
+      },
     });
 
-    // Auto-login: issue JWT
     const { token } = signToken(user);
 
     res.status(201).json({
@@ -74,9 +75,11 @@ router.post('/signup', async (req, res, next) => {
       token,
       user: {
         id: user.id,
+        name: user.name,
         email: user.email,
         churchName: user.churchName,
         role: user.role,
+        licenseQuotas: user.licenseQuotas,
         graceExpiresAt: user.graceExpiresAt,
         createdAt: user.createdAt,
       },
@@ -84,7 +87,84 @@ router.post('/signup', async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
+};
+
+router.post("/register", handleGeneralRegister);
+router.post("/signup", handleGeneralRegister);
+
+/**
+ * POST /auth/register/admin and POST /auth/admin/register
+ * Register an in-house administrator account (super_admin).
+ */
+const handleAdminRegister = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { name, email, password, churchName } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        error: "missing_fields",
+        message: "Email and password are required",
+      });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        error: "invalid_email",
+        message: "Please provide a valid email address",
+      });
+    }
+
+    if (typeof password !== "string" || password.length < 8) {
+      return res.status(400).json({
+        error: "weak_password",
+        message: "Password must be at least 8 characters long",
+      });
+    }
+
+    const existing = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existing) {
+      return res.status(409).json({
+        error: "email_exists",
+        message: "An administrator account with this email address already exists",
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const graceExpiresAt = User.computeGraceExpiry(120); // 10 years grace for in-house admins
+
+    const user = await User.create({
+      name: name?.trim() || "Platform Admin",
+      email: email.toLowerCase().trim(),
+      passwordHash,
+      churchName: (churchName || "WaveIO In-House HQ").trim(),
+      role: "super_admin",
+      graceExpiresAt,
+    });
+
+    const { token } = signToken(user);
+
+    res.status(201).json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        churchName: user.churchName,
+        role: "super_admin",
+        graceExpiresAt: user.graceExpiresAt,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+router.post("/register/admin", handleAdminRegister);
+router.post("/admin/register", handleAdminRegister);
 
 /**
  * POST /auth/login
