@@ -97,6 +97,11 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 };
 
 // Static helper to compute grace expiry date from months
+userSchema.methods.isGraceExpired = function () {
+  if (!this.graceExpiresAt) return false;
+  return new Date() > new Date(this.graceExpiresAt);
+};
+
 userSchema.statics.computeGraceExpiry = function (months = 3, startDate = new Date()) {
   const expiry = new Date(startDate);
   expiry.setMonth(expiry.getMonth() + months);
