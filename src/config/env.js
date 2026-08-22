@@ -1,32 +1,58 @@
-require('dotenv').config();
+require("dotenv").config();
 
 const env = {
   get NODE_ENV() {
-    return process.env.NODE_ENV || 'development';
+    return process.env.NODE_ENV || "development";
   },
   get PORT() {
-    return parseInt(process.env.PORT || '5001', 10);
+    return parseInt(process.env.PORT || "5001", 10);
   },
   get MONGODB_URI() {
-    return process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ocs';
+    return process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/ocs";
   },
   get JWT_SECRET() {
-    return process.env.JWT_SECRET || 'ocs_dev_secret_jwt_key_should_be_overridden_in_prod';
+    return (
+      process.env.JWT_SECRET ||
+      "ocs_dev_secret_jwt_key_should_be_overridden_in_prod"
+    );
   },
   get JWT_EXPIRY() {
-    return process.env.JWT_EXPIRY || '30d';
+    return process.env.JWT_EXPIRY || "30d";
   },
   get GRACE_PERIOD_MONTHS() {
-    return parseInt(process.env.GRACE_PERIOD_MONTHS || '3', 10);
+    return parseInt(process.env.GRACE_PERIOD_MONTHS || "3", 10);
   },
   get FRONTEND_URL() {
-    return process.env.FRONTEND_URL || 'https://churchocs.com';
+    return process.env.FRONTEND_URL || "https://waveiosoftware.netlify.app";
+  },
+  get NOTIFICATION_EMAILS() {
+    return (
+      process.env.NOTIFICATION_EMAILS ||
+      "johnsonare0722@gmail.com, waveiosoftware@gmail.com"
+    );
+  },
+  get SMTP_HOST() {
+    return process.env.SMTP_HOST || process.env.EMAIL_HOST || "";
+  },
+  get SMTP_PORT() {
+    return parseInt(process.env.SMTP_PORT || process.env.EMAIL_PORT || "587", 10);
+  },
+  get SMTP_USER() {
+    return process.env.SMTP_USER || process.env.EMAIL_USER || process.env.GMAIL_USER || "";
+  },
+  get SMTP_PASS() {
+    return process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.GMAIL_APP_PASSWORD || "";
+  },
+  get FROM_EMAIL() {
+    return process.env.FROM_EMAIL || `"OCS Support" <${process.env.SMTP_USER || "notifications@churchocs.com"}>`;
   },
 };
 
 // Validate critical secrets in production/runtime
-if (!env.JWT_SECRET && env.NODE_ENV === 'production') {
-  throw new Error('FATAL: JWT_SECRET environment variable is required in production.');
+if (!env.JWT_SECRET && env.NODE_ENV === "production") {
+  throw new Error(
+    "FATAL: JWT_SECRET environment variable is required in production.",
+  );
 }
 
 module.exports = env;

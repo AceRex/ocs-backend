@@ -5,6 +5,7 @@ const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth')
 const adminMiddleware = require('../middleware/admin');
 const { rateLimiter } = require('../middleware/rateLimiter');
 const { connectToDatabase } = require('../config/db');
+const { sendTicketNotification } = require('../utils/mailer');
 
 const router = express.Router();
 
@@ -60,6 +61,11 @@ router.post(
         priority: validPriority,
       });
 
+      // Dispatch real-time email notification to admins (johnsonare0722@gmail.com, waveiosoftware@gmail.com)
+      sendTicketNotification(ticket).catch((err) => {
+        console.error('[Ticket Notification] Failed to send email:', err);
+      });
+
       res.status(201).json({
         success: true,
         message: 'Support ticket submitted successfully',
@@ -77,6 +83,55 @@ router.post(
     }
   }
 );
+
+/**
+ * GET /tickets
+ * Protected endpoint for authenticated users / admins.
+ * - Admin: sees all tickets with optional filtering.
+ * - User: sees only their own tickets (matching their userId or email).
+ */
+router.get('/tickets', authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+
+    const { status, priority, limit = 50, page = 1 } = req.query;
+    const filter = {};
+
+    if (req.user.role !== 'admin') {
+      filter.$or = [{ userId: req.user.id }, { email: req.user.email }];
+    }
+
+    if (status && ['open', 'in_progress', 'resolved'].includes(status)) {
+      filter.status = status;
+    }
+    if (priority && ['low', 'normal', 'high'].includes(priority)) {
+      filter.priority = priority;
+    }
+
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+    const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+    const skip = (parsedPage - 1) * parsedLimit;
+
+    const [tickets, total] = await Promise.all([
+      Ticket.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parsedLimit)
+        .populate('userId', 'email churchName role'),
+      Ticket.countDocuments(filter),
+    ]);
+
+    res.json({
+      total,
+      page: parsedPage,
+      limit: parsedLimit,
+      totalPages: Math.ceil(total / parsedLimit),
+      tickets,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * GET /admin/tickets

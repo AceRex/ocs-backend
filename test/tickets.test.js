@@ -83,6 +83,46 @@ describe('Tickets Endpoints (/api/tickets & /api/admin/tickets)', () => {
     });
   });
 
+  describe('GET /api/tickets (Protected)', () => {
+    beforeEach(async () => {
+      await Ticket.create({
+        userId: regularUserId,
+        email: 'member@church.org',
+        subject: 'User Ticket',
+        message: 'Problem A',
+      });
+      await Ticket.create({
+        email: 'other@church.org',
+        subject: 'Other User Ticket',
+        message: 'Problem B',
+      });
+    });
+
+    it('rejects unauthenticated request with 401 unauthorized', async () => {
+      const res = await request(app).get('/api/tickets').expect(401);
+      expect(res.body.error).toBe('unauthorized');
+    });
+
+    it('returns only user tickets for authenticated regular user', async () => {
+      const res = await request(app)
+        .get('/api/tickets')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.body.total).toBe(1);
+      expect(res.body.tickets[0].subject).toBe('User Ticket');
+    });
+
+    it('returns all tickets for authenticated admin', async () => {
+      const res = await request(app)
+        .get('/api/tickets')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.total).toBe(2);
+    });
+  });
+
   describe('Admin Ticket Management & Notes', () => {
     let ticketId;
 

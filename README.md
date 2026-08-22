@@ -86,8 +86,9 @@ When the desktop app initiates browser login via `https://auth.churchocs.com/log
 
 | Method | Path | Auth | Description |
 | :--- | :--- | :--- | :--- |
-| `POST` | `/api/tickets` | Optional (Rate Limited) | Submits support ticket. Attaches `userId` if authenticated. |
-| `GET` | `/api/admin/tickets` | Admin | Lists support tickets with status and priority filtering. |
+| `POST` | `/api/tickets` | Public / Optional | Submits support ticket (unprotected). Attaches `userId` if authenticated. |
+| `GET` | `/api/tickets` | Bearer Token | Returns user's own tickets (or all tickets if caller is Admin). |
+| `GET` | `/api/admin/tickets` | Admin | Lists all support tickets with status and priority filtering. |
 | `GET` | `/api/admin/tickets/:id` | Admin | Returns full ticket detail including internal admin notes. |
 | `PATCH` | `/api/admin/tickets/:id` | Admin | Updates ticket status (`open`, `in_progress`, `resolved`) or priority. |
 | `POST` | `/api/admin/tickets/:id/notes` | Admin | Adds internal admin-only note. **Never exposed through public endpoints.** |
