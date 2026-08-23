@@ -142,9 +142,7 @@ const userSchema = new mongoose.Schema(
     trialEndsAt: {
       type: Date,
       default: function() {
-        const d = new Date();
-        d.setMonth(d.getMonth() + 2); // 2 months trial
-        return d;
+        return new Date(Date.now() + 60 * 24 * 60 * 60 * 1000); // Standard 60-day (2-Month) Free Trial
       },
     },
     subscriptionExpiresAt: {
@@ -188,9 +186,7 @@ const userSchema = new mongoose.Schema(
     graceExpiresAt: {
       type: Date,
       default: function() {
-        const d = new Date();
-        d.setMonth(d.getMonth() + 2);
-        return d;
+        return new Date(Date.now() + 60 * 24 * 60 * 60 * 1000); // Standard 60-day Free Trial Grace
       },
     },
     // Password reset fields (FR-15.3)
@@ -264,11 +260,26 @@ userSchema.methods.getEffectiveTier = function () {
 };
 
 userSchema.methods.getTrialRemainingDays = function () {
-  const trialEnd = this.trialEndsAt || this.graceExpiresAt;
+  const tier = typeof this.getEffectiveTier === "function" ? this.getEffectiveTier() : this.subscriptionTier;
+  if (tier === "free") return 0;
+
+  const trialStart = this.trialStartedAt || this.createdAt || new Date();
+  let trialEnd = this.trialEndsAt || this.graceExpiresAt;
+
+  // Normalize legacy records if trialEnd was initialized via setMonth(+2) resulting in >60 days
+  if (trialStart && trialEnd) {
+    const totalTrialDays = (new Date(trialEnd).getTime() - new Date(trialStart).getTime()) / (1000 * 60 * 60 * 24);
+    if (totalTrialDays > 60) {
+      trialEnd = new Date(new Date(trialStart).getTime() + 60 * 24 * 60 * 60 * 1000);
+    }
+  }
+
   if (!trialEnd) return 0;
   const diffMs = new Date(trialEnd).getTime() - Date.now();
   if (diffMs <= 0) return 0;
-  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+  const remaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  return Math.min(60, Math.max(0, remaining));
 };
 
 userSchema.methods.getEntitlements = function () {
@@ -294,15 +305,13 @@ userSchema.methods.getEntitlements = function () {
 };
 
 userSchema.statics.computeGraceExpiry = function (months = 2, startDate = new Date()) {
-  const expiry = new Date(startDate);
-  expiry.setMonth(expiry.getMonth() + months);
-  return expiry;
+  const start = new Date(startDate);
+  return new Date(start.getTime() + months * 30 * 24 * 60 * 60 * 1000);
 };
 
 userSchema.statics.computeTrialExpiry = function (months = 2, startDate = new Date()) {
-  const expiry = new Date(startDate);
-  expiry.setMonth(expiry.getMonth() + months);
-  return expiry;
+  const start = new Date(startDate);
+  return new Date(start.getTime() + months * 30 * 24 * 60 * 60 * 1000);
 };
 
 userSchema.statics.PLAN_FEATURES = PLAN_FEATURES;

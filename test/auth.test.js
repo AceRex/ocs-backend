@@ -26,15 +26,31 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.user.role).toBe("church_admin");
       expect(res.body.user.passwordHash).toBeUndefined();
 
-      // Verify trial setup (2 months, Mini features)
+      // Verify trial setup (2 months, 60 days, Mini features)
       expect(res.body.user.subscriptionTier).toBe("trial");
       expect(res.body.user.isTrial).toBe(true);
-      expect(res.body.user.trialRemainingDays).toBeGreaterThanOrEqual(58);
+      expect(res.body.user.trialRemainingDays).toBe(60);
       expect(res.body.user.features).toContain("presentation.basic");
       expect(res.body.user.features).toContain("song.basic");
       expect(res.body.user.features).toContain("pdf.view");
       expect(res.body.user.licenseQuotas.maxDesktops).toBe(1);
       expect(res.body.user.licenseQuotas.maxMobileUsers).toBe(3);
+    });
+
+    it("accurately calculates 59-60 days left for user registered yesterday", async () => {
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const user = await User.create({
+        name: "Yesterday User",
+        email: "yesterday@church.org",
+        passwordHash: "hash123",
+        churchName: "Yesterday Church",
+        trialStartedAt: yesterday,
+        createdAt: yesterday,
+        // Legacy record that had setMonth(+2) resulting in 61/62 days
+        trialEndsAt: new Date(yesterday.getTime() + 62 * 24 * 60 * 60 * 1000),
+      });
+
+      expect(user.getTrialRemainingDays()).toBe(59);
     });
 
     it("rejects duplicate email with 409 email_exists", async () => {

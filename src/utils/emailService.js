@@ -68,7 +68,9 @@ function getPlanDetails(user) {
     : 'Soon';
   
   let daysRemaining = 0;
-  if (expiry) {
+  if (typeof user.getTrialRemainingDays === 'function' && tier === 'trial') {
+    daysRemaining = user.getTrialRemainingDays();
+  } else if (expiry) {
     const diffMs = new Date(expiry).getTime() - Date.now();
     daysRemaining = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
   }
