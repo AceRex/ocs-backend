@@ -9,6 +9,49 @@ const { connectToDatabase } = require("../config/db");
 
 const router = express.Router();
 
+function formatUserResponse(user) {
+  const entitlements = typeof user.getEntitlements === "function"
+    ? user.getEntitlements()
+    : {
+        tier: "trial",
+        isTrial: true,
+        isTrialExpired: false,
+        trialStartedAt: user.trialStartedAt || user.createdAt || new Date(),
+        trialEndsAt: user.trialEndsAt || user.graceExpiresAt || new Date(),
+        trialRemainingDays: 60,
+        features: User.PLAN_FEATURES?.trial || [],
+        limits: User.PLAN_QUOTAS?.trial || { maxDesktops: 1, maxMobileUsers: 3 },
+      };
+
+  return {
+    id: user.id || user._id.toString(),
+    name: user.name,
+    email: user.email,
+    customerType: user.customerType || "church",
+    churchName: user.churchName,
+    channelLink: user.channelLink || "",
+    podcastLink: user.podcastLink || "",
+    role: user.role,
+    subscriptionTier: entitlements.tier,
+    effectiveTier: entitlements.tier,
+    isTrial: entitlements.isTrial,
+    isTrialExpired: entitlements.isTrialExpired,
+    trialStartedAt: entitlements.trialStartedAt,
+    trialEndsAt: entitlements.trialEndsAt,
+    trialRemainingDays: entitlements.trialRemainingDays,
+    features: entitlements.features,
+    licenseQuotas: {
+      maxDesktops: entitlements.limits?.maxDesktops || 1,
+      maxMobileUsers: entitlements.limits?.maxMobileUsers || 3,
+      activeDesktops: user.licenseQuotas?.activeDesktops || [],
+      activeMobileUsers: user.licenseQuotas?.activeMobileUsers || [],
+    },
+    entitlements,
+    graceExpiresAt: user.graceExpiresAt || entitlements.trialEndsAt,
+  };
+}
+
+
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
@@ -17,12 +60,31 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const handleGeneralRegister = async (req, res, next) => {
   try {
     await connectToDatabase();
-    const { name, email, password, churchName, role = "church_admin" } = req.body;
+    const {
+      name,
+      email,
+      password,
+      churchName,
+      customerType = "church",
+      channelLink = "",
+      podcastLink = "",
+      role = "church_admin",
+    } = req.body;
 
-    if (!email || !password || !churchName) {
+    let effectiveOrg = churchName?.trim();
+    if (!effectiveOrg) {
+      if (customerType === "streamer") effectiveOrg = channelLink?.trim();
+      else if (customerType === "podcast") effectiveOrg = podcastLink?.trim();
+    }
+
+    if (!email || !password || !effectiveOrg) {
       return res.status(400).json({
         error: "missing_fields",
-        message: "Email, password, and church name are required",
+        message: customerType === "streamer"
+          ? "Email, password, and channel link are required"
+          : (customerType === "podcast"
+              ? "Email, password, and podcast link or name are required"
+              : "Email, password, and church name are required"),
       });
     }
 
@@ -53,16 +115,23 @@ const handleGeneralRegister = async (req, res, next) => {
     const assignedRole = role === "user" ? "user" : "church_admin";
     const graceExpiresAt = User.computeGraceExpiry(3);
 
+    const trialEndsAt = User.computeTrialExpiry ? User.computeTrialExpiry(2) : User.computeGraceExpiry(2);
     const user = await User.create({
       name: name?.trim() || cleanEmail.split("@")[0],
       email: cleanEmail,
       passwordHash,
-      churchName: churchName.trim(),
+      customerType: ["church", "streamer", "podcast"].includes(customerType) ? customerType : "church",
+      churchName: effectiveOrg,
+      channelLink: channelLink?.trim() || (customerType === "streamer" ? effectiveOrg : ""),
+      podcastLink: podcastLink?.trim() || (customerType === "podcast" ? effectiveOrg : ""),
       role: assignedRole,
-      graceExpiresAt,
+      subscriptionTier: "trial",
+      trialStartedAt: new Date(),
+      trialEndsAt,
+      graceExpiresAt: trialEndsAt,
       licenseQuotas: {
-        maxDesktops: 2,
-        maxMobileUsers: 5,
+        maxDesktops: 1,
+        maxMobileUsers: 3,
         activeDesktops: [],
         activeMobileUsers: [],
       },
@@ -74,15 +143,7 @@ const handleGeneralRegister = async (req, res, next) => {
       success: true,
       message: "User created successfully",
       token,
-      user: {
-        id: user.id || user._id.toString(),
-        name: user.name,
-        email: user.email,
-        churchName: user.churchName,
-        role: user.role,
-        licenseQuotas: user.licenseQuotas,
-        graceExpiresAt: user.graceExpiresAt,
-      },
+      user: formatUserResponse(user),
     });
   } catch (err) {
     next(err);
@@ -158,7 +219,10 @@ const handleAdminRegister = async (req, res, next) => {
         id: user.id || user._id.toString(),
         name: user.name,
         email: user.email,
+        customerType: user.customerType || "church",
         churchName: user.churchName,
+        channelLink: user.channelLink || "",
+        podcastLink: user.podcastLink || "",
         role: user.role,
         licenseQuotas: user.licenseQuotas,
         graceExpiresAt: user.graceExpiresAt,
@@ -256,14 +320,6 @@ router.post("/login", async (req, res, next) => {
       });
     }
 
-    // Check trial expiration (non-super admins)
-    if (user.role !== "super_admin" && user.isGraceExpired()) {
-      return res.status(403).json({
-        error: "trial_expired",
-        message: "Your 3-month trial grace period has expired. Please contact support.",
-      });
-    }
-
     loginAttemptTracker.reset(req);
     const { token } = signToken(user);
 
@@ -271,15 +327,7 @@ router.post("/login", async (req, res, next) => {
       success: true,
       message: "Login successful",
       token,
-      user: {
-        id: user.id || user._id.toString(),
-        name: user.name || user.email.split("@")[0],
-        email: user.email,
-        churchName: user.churchName,
-        role: user.role,
-        licenseQuotas: user.licenseQuotas,
-        graceExpiresAt: user.graceExpiresAt,
-      },
+      user: formatUserResponse(user),
     });
   } catch (err) {
     next(err);
@@ -319,28 +367,16 @@ router.post("/validate-token", async (req, res, next) => {
       return res.status(200).json({ valid: false, reason: "user_not_found" });
     }
 
-    if (user.role !== "super_admin" && user.isGraceExpired()) {
-      return res.status(200).json({ valid: false, reason: "trial_expired" });
-    }
-
     res.status(200).json({
       valid: true,
-      user: {
-        id: user.id || user._id.toString(),
-        email: user.email,
-        churchName: user.churchName,
-        role: user.role,
-        graceExpiresAt: user.graceExpiresAt,
-      },
+      user: formatUserResponse(user),
+      entitlements: user.getEntitlements ? user.getEntitlements() : undefined,
     });
   } catch (err) {
     res.status(200).json({ valid: false, reason: "invalid_token" });
   }
 });
 
-/**
- * POST /auth/revoke
- */
 router.post("/revoke", async (req, res, next) => {
   try {
     await connectToDatabase();
@@ -399,25 +435,13 @@ router.get("/me", authMiddleware, async (req, res, next) => {
   try {
     res.json({
       success: true,
-      user: {
-        id: req.user.id || req.user._id.toString(),
-        name: req.user.name || req.user.email.split("@")[0],
-        email: req.user.email,
-        churchName: req.user.churchName,
-        role: req.user.role,
-        licenseQuotas: req.user.licenseQuotas,
-        graceExpiresAt: req.user.graceExpiresAt,
-      },
+      user: formatUserResponse(req.user),
     });
   } catch (err) {
     next(err);
   }
 });
 
-/**
- * GET /auth/users/admin & /auth/admin/users & /auth/admins
- * Strictly for In-House Super Administrators table
- */
 const handleGetAdminUsers = async (req, res, next) => {
   try {
     await connectToDatabase();
@@ -517,6 +541,9 @@ router.get("/users", async (req, res, next) => {
         name: u.name || u.email.split("@")[0],
         email: u.email,
         church: u.churchName,
+        customerType: u.customerType || "church",
+        channelLink: u.channelLink || "",
+        podcastLink: u.podcastLink || "",
         role: u.role || "church_admin",
         licenseQuotas: u.licenseQuotas || { maxDesktops: 2, maxMobileUsers: 5, activeDesktops: [], activeMobileUsers: [] },
         graceExpiresAt: u.graceExpiresAt,
@@ -535,12 +562,27 @@ router.get("/users", async (req, res, next) => {
 router.post("/users", async (req, res, next) => {
   try {
     await connectToDatabase();
-    const { name, email, password, churchName, role = "church_admin" } = req.body;
+    const {
+      name,
+      email,
+      password,
+      churchName,
+      customerType = "church",
+      channelLink = "",
+      podcastLink = "",
+      role = "church_admin",
+    } = req.body;
 
-    if (!email || !password || !churchName) {
+    let effectiveOrg = churchName?.trim();
+    if (!effectiveOrg) {
+      if (customerType === "streamer") effectiveOrg = channelLink?.trim();
+      else if (customerType === "podcast") effectiveOrg = podcastLink?.trim();
+    }
+
+    if (!email || !password || !effectiveOrg) {
       return res.status(400).json({
         error: "missing_fields",
-        message: "Email, password, and church name are required",
+        message: "Email, password, and organization/channel/podcast details are required",
       });
     }
 
@@ -561,7 +603,10 @@ router.post("/users", async (req, res, next) => {
       name: name?.trim() || cleanEmail.split("@")[0],
       email: cleanEmail,
       passwordHash,
-      churchName: churchName.trim(),
+      customerType: isSuperAdmin ? "church" : (["church", "streamer", "podcast"].includes(customerType) ? customerType : "church"),
+      churchName: effectiveOrg,
+      channelLink: channelLink?.trim() || (customerType === "streamer" ? effectiveOrg : ""),
+      podcastLink: podcastLink?.trim() || (customerType === "podcast" ? effectiveOrg : ""),
       role: isSuperAdmin ? "super_admin" : (role === "user" ? "user" : "church_admin"),
       graceExpiresAt,
       licenseQuotas: {
@@ -626,6 +671,20 @@ router.delete("/users/:id", async (req, res, next) => {
 /**
  * GET /auth/license
  */
+router.get("/entitlements", authMiddleware, async (req, res, next) => {
+  try {
+    const user = req.user;
+    const entitlements = user.getEntitlements ? user.getEntitlements() : {};
+    res.json({
+      success: true,
+      entitlements,
+      user: formatUserResponse(user),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get("/license", authMiddleware, async (req, res, next) => {
   try {
     res.json({
@@ -718,3 +777,57 @@ router.post("/device/register", authMiddleware, async (req, res, next) => {
 });
 
 module.exports = router;
+
+
+/**
+ * PUT /auth/users/:id/tier & /auth/user/:id/tier
+ */
+router.put("/users/:id/tier", async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+    const { subscriptionTier, extendMonths = 0 } = req.body;
+
+    let user = null;
+    if (id && id.match(/^[0-9a-fA-F]{24}$/)) {
+      user = await User.findById(id);
+    }
+    if (!user) {
+      user = await User.findOne({
+        $or: [{ email: id.toLowerCase().trim() }, { churchName: id }],
+      });
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: "not_found", message: "User not found" });
+    }
+
+    if (subscriptionTier) {
+      user.subscriptionTier = subscriptionTier;
+    }
+
+    if (extendMonths > 0) {
+      const now = new Date();
+      const newExpiry = new Date(now.setMonth(now.getMonth() + Number(extendMonths)));
+      user.graceExpiresAt = newExpiry;
+      user.subscriptionExpiresAt = newExpiry;
+      if (subscriptionTier === "trial") {
+        user.trialEndsAt = newExpiry;
+      }
+    }
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Updated ${user.churchName} to ${user.subscriptionTier.toUpperCase()} tier`,
+      user: formatUserResponse(user),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+router.put("/user/:id/tier", async (req, res, next) => {
+  req.url = req.url.replace("/user/", "/users/");
+  router.handle(req, res, next);
+});

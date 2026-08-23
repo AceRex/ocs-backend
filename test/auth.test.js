@@ -1,20 +1,20 @@
-const request = require('supertest');
-const app = require('../src/app');
-const User = require('../src/models/User');
-const RevokedToken = require('../src/models/RevokedToken');
-require('./setup');
+const request = require("supertest");
+const app = require("../src/app");
+const User = require("../src/models/User");
+const RevokedToken = require("../src/models/RevokedToken");
+require("./setup");
 
-describe('Auth Endpoints (/api/auth)', () => {
+describe("Auth Endpoints (/api/auth)", () => {
   const testUser = {
-    email: 'pastor@gracechurch.org',
-    password: 'SecurePassword123!',
-    churchName: 'Grace Community Church',
+    email: "pastor@gracechurch.org",
+    password: "SecurePassword123!",
+    churchName: "Grace Community Church",
   };
 
-  describe('POST /api/auth/signup', () => {
-    it('successfully signs up a new user, computes 3-month grace period, and returns JWT', async () => {
+  describe("POST /api/auth/signup", () => {
+    it("successfully signs up a new user with 2-month trial and Mini features", async () => {
       const res = await request(app)
-        .post('/api/auth/signup')
+        .post("/api/auth/signup")
         .send(testUser)
         .expect(201);
 
@@ -23,177 +23,201 @@ describe('Auth Endpoints (/api/auth)', () => {
       expect(res.body.user).toBeDefined();
       expect(res.body.user.email).toBe(testUser.email.toLowerCase());
       expect(res.body.user.churchName).toBe(testUser.churchName);
-      expect(res.body.user.role).toBe('church_admin');
-      expect(res.body.user.passwordHash).toBeUndefined(); // Guardrail: never return hash
+      expect(res.body.user.role).toBe("church_admin");
+      expect(res.body.user.passwordHash).toBeUndefined();
 
-      // Verify graceExpiresAt is approx 3 months in future
-      const graceDate = new Date(res.body.user.graceExpiresAt);
-      const now = new Date();
-      const diffMonths = (graceDate.getFullYear() - now.getFullYear()) * 12 + (graceDate.getMonth() - now.getMonth());
-      expect(diffMonths).toBe(3);
+      // Verify trial setup (2 months, Mini features)
+      expect(res.body.user.subscriptionTier).toBe("trial");
+      expect(res.body.user.isTrial).toBe(true);
+      expect(res.body.user.trialRemainingDays).toBeGreaterThanOrEqual(58);
+      expect(res.body.user.features).toContain("presentation.basic");
+      expect(res.body.user.features).toContain("song.basic");
+      expect(res.body.user.features).toContain("pdf.view");
+      expect(res.body.user.licenseQuotas.maxDesktops).toBe(1);
+      expect(res.body.user.licenseQuotas.maxMobileUsers).toBe(3);
     });
 
-    it('rejects duplicate email with 409 email_exists', async () => {
-      await request(app).post('/api/auth/signup').send(testUser).expect(201);
+    it("rejects duplicate email with 409 email_exists", async () => {
+      await request(app).post("/api/auth/signup").send(testUser).expect(201);
 
       const res = await request(app)
-        .post('/api/auth/signup')
+        .post("/api/auth/signup")
         .send(testUser)
         .expect(409);
 
-      expect(res.body.error).toBe('email_exists');
+      expect(res.body.error).toBe("email_exists");
     });
 
-    it('rejects invalid email format with 400', async () => {
+    it("rejects invalid email format with 400", async () => {
       const res = await request(app)
-        .post('/api/auth/signup')
-        .send({ ...testUser, email: 'not-an-email' })
+        .post("/api/auth/signup")
+        .send({ ...testUser, email: "not-an-email" })
         .expect(400);
 
-      expect(res.body.error).toBe('invalid_email');
+      expect(res.body.error).toBe("invalid_email");
     });
 
-    it('rejects weak password with 400', async () => {
+    it("rejects weak password with 400", async () => {
       const res = await request(app)
-        .post('/api/auth/signup')
-        .send({ ...testUser, password: '123' })
+        .post("/api/auth/signup")
+        .send({ ...testUser, password: "123" })
         .expect(400);
 
-      expect(res.body.error).toBe('weak_password');
+      expect(res.body.error).toBe("weak_password");
     });
   });
 
-  describe('POST /api/auth/login', () => {
+  describe("POST /api/auth/login", () => {
     beforeEach(async () => {
-      await request(app).post('/api/auth/signup').send(testUser);
+      await request(app).post("/api/auth/signup").send(testUser);
     });
 
-    it('successfully logs in with valid credentials and returns JWT', async () => {
+    it("successfully logs in with valid credentials and returns JWT with entitlements", async () => {
       const res = await request(app)
-        .post('/api/auth/login')
+        .post("/api/auth/login")
         .send({ email: testUser.email, password: testUser.password })
         .expect(200);
 
       expect(res.body.success).toBe(true);
       expect(res.body.token).toBeDefined();
       expect(res.body.user.email).toBe(testUser.email.toLowerCase());
+      expect(res.body.user.subscriptionTier).toBe("trial");
+      expect(res.body.user.features).toContain("timer.basic");
     });
 
-    it('rejects wrong password with 401 invalid_credentials', async () => {
+    it("rejects wrong password with 401 invalid_credentials", async () => {
       const res = await request(app)
-        .post('/api/auth/login')
-        .send({ email: testUser.email, password: 'WrongPassword999!' })
+        .post("/api/auth/login")
+        .send({ email: testUser.email, password: "WrongPassword999!" })
         .expect(401);
 
-      expect(res.body.error).toBe('invalid_credentials');
+      expect(res.body.error).toBe("invalid_credentials");
     });
 
-    it('blocks login with 403 trial_expired if graceExpiresAt has passed', async () => {
-      // Artificially backdate graceExpiresAt in the database
-      const expiredDate = new Date(Date.now() - 24 * 60 * 60 * 1000); // 1 day ago
-      await User.updateOne({ email: testUser.email.toLowerCase() }, { graceExpiresAt: expiredDate });
+    it("automatically downgrades to free tier with Timer & Broadcast only when trial expires", async () => {
+      // Backdate trial
+      const expiredDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      await User.updateOne({ email: testUser.email.toLowerCase() }, { trialEndsAt: expiredDate, graceExpiresAt: expiredDate });
 
       const res = await request(app)
-        .post('/api/auth/login')
+        .post("/api/auth/login")
         .send({ email: testUser.email, password: testUser.password })
-        .expect(403);
+        .expect(200);
 
-      expect(res.body.error).toBe('trial_expired');
-      expect(res.body.message).toMatch(/trial grace period has expired/i);
+      expect(res.body.success).toBe(true);
+      expect(res.body.user.subscriptionTier).toBe("free");
+      expect(res.body.user.isTrial).toBe(false);
+      expect(res.body.user.isTrialExpired).toBe(true);
+      expect(res.body.user.features).toEqual(["timer.basic", "broadcast.basic"]);
+      expect(res.body.user.licenseQuotas.maxDesktops).toBe(1);
+      expect(res.body.user.licenseQuotas.maxMobileUsers).toBe(1);
     });
   });
 
-  describe('POST /api/auth/validate-token', () => {
+  describe("POST /api/auth/validate-token", () => {
     let validToken;
 
     beforeEach(async () => {
-      const res = await request(app).post('/api/auth/signup').send(testUser);
+      const res = await request(app).post("/api/auth/signup").send(testUser);
       validToken = res.body.token;
     });
 
-    it('validates active token successfully', async () => {
+    it("validates active token successfully and returns current entitlements", async () => {
       const res = await request(app)
-        .post('/api/auth/validate-token')
+        .post("/api/auth/validate-token")
         .send({ token: validToken })
         .expect(200);
 
       expect(res.body.valid).toBe(true);
       expect(res.body.user.email).toBe(testUser.email.toLowerCase());
+      expect(res.body.user.subscriptionTier).toBe("trial");
     });
 
-    it('accepts token in Authorization header as well as body', async () => {
+    it("accepts token in Authorization header as well as body", async () => {
       const res = await request(app)
-        .post('/api/auth/validate-token')
-        .set('Authorization', `Bearer ${validToken}`)
+        .post("/api/auth/validate-token")
+        .set("Authorization", `Bearer ${validToken}`)
         .expect(200);
 
       expect(res.body.valid).toBe(true);
     });
 
-    it('returns valid: false, reason: trial_expired if user grace period expired after issuance', async () => {
-      // Artificially expire the user
+    it("returns valid: true with free tier when trial expires after token issuance", async () => {
       const expiredDate = new Date(Date.now() - 1000);
-      await User.updateOne({ email: testUser.email.toLowerCase() }, { graceExpiresAt: expiredDate });
+      await User.updateOne({ email: testUser.email.toLowerCase() }, { trialEndsAt: expiredDate, graceExpiresAt: expiredDate });
 
       const res = await request(app)
-        .post('/api/auth/validate-token')
+        .post("/api/auth/validate-token")
         .send({ token: validToken })
         .expect(200);
 
-      expect(res.body.valid).toBe(false);
-      expect(res.body.reason).toBe('trial_expired');
+      expect(res.body.valid).toBe(true);
+      expect(res.body.user.subscriptionTier).toBe("free");
+      expect(res.body.user.features).toEqual(["timer.basic", "broadcast.basic"]);
     });
 
-    it('returns valid: false, reason: token_revoked after token revocation', async () => {
-      // Revoke the token
+    it("returns valid: false, reason: token_revoked after token revocation", async () => {
       await request(app)
-        .post('/api/auth/revoke')
+        .post("/api/auth/revoke")
+        .set("Authorization", `Bearer ${validToken}`)
         .send({ token: validToken })
         .expect(200);
 
-      // Validate again
       const res = await request(app)
-        .post('/api/auth/validate-token')
+        .post("/api/auth/validate-token")
         .send({ token: validToken })
         .expect(200);
 
       expect(res.body.valid).toBe(false);
-      expect(res.body.reason).toBe('token_revoked');
+      expect(res.body.reason).toBe("token_revoked");
     });
 
-    it('returns valid: false, reason: invalid_token for malformed token', async () => {
+    it("returns valid: false, reason: invalid_token for malformed token", async () => {
       const res = await request(app)
-        .post('/api/auth/validate-token')
-        .send({ token: 'malformed.fake.jwt' })
+        .post("/api/auth/validate-token")
+        .send({ token: "malformed.fake.jwt" })
         .expect(200);
 
       expect(res.body.valid).toBe(false);
-      expect(res.body.reason).toBe('invalid_token');
+      expect(res.body.reason).toBe("invalid_token");
     });
   });
 
-  describe('GET /api/auth/me', () => {
+  describe("GET /api/auth/me & GET /api/auth/entitlements", () => {
     let token;
 
     beforeEach(async () => {
-      const res = await request(app).post('/api/auth/signup').send(testUser);
+      const res = await request(app).post("/api/auth/signup").send(testUser);
       token = res.body.token;
     });
 
-    it('returns user profile for authenticated user', async () => {
+    it("returns user profile for authenticated user with active trial", async () => {
       const res = await request(app)
-        .get('/api/auth/me')
-        .set('Authorization', `Bearer ${token}`)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${token}`)
         .expect(200);
 
       expect(res.body.user).toBeDefined();
       expect(res.body.user.email).toBe(testUser.email.toLowerCase());
       expect(res.body.user.churchName).toBe(testUser.churchName);
+      expect(res.body.user.subscriptionTier).toBe("trial");
     });
 
-    it('rejects unauthenticated request with 401', async () => {
-      const res = await request(app).get('/api/auth/me').expect(401);
-      expect(res.body.error).toBe('unauthorized');
+    it("returns entitlement details on /api/auth/entitlements", async () => {
+      const res = await request(app)
+        .get("/api/auth/entitlements")
+        .set("Authorization", `Bearer ${token}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.entitlements.tier).toBe("trial");
+      expect(res.body.entitlements.features).toContain("presentation.basic");
+      expect(res.body.entitlements.limits.maxDesktops).toBe(1);
+    });
+
+    it("rejects unauthenticated request with 401", async () => {
+      const res = await request(app).get("/api/auth/me").expect(401);
+      expect(res.body.error).toBe("unauthorized");
     });
   });
 });

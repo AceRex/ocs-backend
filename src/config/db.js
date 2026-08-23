@@ -1,11 +1,6 @@
-const mongoose = require('mongoose');
-const env = require('./env');
+const mongoose = require("mongoose");
+const env = require("./env");
 
-/**
- * Global cached connection across serverless function invocations.
- * In serverless environments (e.g. Netlify Functions / AWS Lambda),
- * Node.js module scope is preserved across warm invocations.
- */
 let cached = global.mongoose;
 
 if (!cached) {
@@ -13,11 +8,17 @@ if (!cached) {
 }
 
 async function connectToDatabase(uri = env.MONGODB_URI) {
-  if (cached.conn && mongoose.connection.readyState === 1) {
+  if (mongoose.connection.readyState === 1) {
+    cached.conn = mongoose;
     return cached.conn;
   }
 
-  if (!cached.promise) {
+  if (mongoose.connection.readyState === 2 && cached.promise) {
+    cached.conn = await cached.promise;
+    return cached.conn;
+  }
+
+  if (!cached.promise || mongoose.connection.readyState === 0) {
     const opts = {
       bufferCommands: false,
       maxPoolSize: 10,

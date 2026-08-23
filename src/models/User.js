@@ -1,6 +1,83 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
+const AccountTier = {
+  TRIAL: "trial",
+  FREE: "free",
+  MINI: "mini",
+  STANDARD: "standard",
+  LARGE: "large",
+  PREMIUM: "premium",
+};
+
+const PLAN_FEATURES = {
+  free: [
+    "timer.basic",
+    "broadcast.basic",
+  ],
+  trial: [
+    "timer.basic",
+    "broadcast.basic",
+    "presentation.basic",
+    "pdf.view",
+    "scene.basic",
+    "song.basic",
+  ],
+  mini: [
+    "timer.basic",
+    "broadcast.basic",
+    "presentation.basic",
+    "pdf.view",
+    "scene.basic",
+    "song.basic",
+  ],
+  standard: [
+    "timer.basic",
+    "broadcast.basic",
+    "timer.interval",
+    "timer.change_view",
+    "presentation.basic",
+    "pdf.view",
+    "pdf.edit",
+    "slides.use",
+    "scene.basic",
+    "song.basic",
+  ],
+  large: [
+    "timer.basic",
+    "broadcast.basic",
+    "timer.start_time",
+    "timer.interval",
+    "timer.change_view",
+    "presentation.basic",
+    "presentation.intro",
+    "presentation.outro",
+    "pdf.view",
+    "pdf.edit",
+    "slides.use",
+    "scene.basic",
+    "scene.animations",
+    "scene.transitions",
+    "song.basic",
+    "song.chorus_flow",
+    "song.repeat",
+    "sing_along",
+    "read_along",
+  ],
+  premium: [
+    "premium.full_access",
+  ],
+};
+
+const PLAN_QUOTAS = {
+  free: { maxDesktops: 1, maxMobileUsers: 1 },
+  trial: { maxDesktops: 1, maxMobileUsers: 3 },
+  mini: { maxDesktops: 1, maxMobileUsers: 3 },
+  standard: { maxDesktops: 1, maxMobileUsers: 5 },
+  large: { maxDesktops: 2, maxMobileUsers: 5 },
+  premium: { maxDesktops: 99, maxMobileUsers: 99 },
+};
+
 const userSchema = new mongoose.Schema(
   {
     name: {
@@ -22,28 +99,67 @@ const userSchema = new mongoose.Schema(
     passwordHash: {
       type: String,
       required: [true, "Password hash is required"],
-      select: false, // Do not return passwordHash by default
+      select: false,
+    },
+    customerType: {
+      type: String,
+      enum: ["church", "streamer", "podcast"],
+      default: "church",
+      index: true,
     },
     churchName: {
       type: String,
-      required: [true, "Church / Organization name is required"],
+      required: [true, "Organization, Channel, or Podcast name is required"],
       trim: true,
+    },
+    channelLink: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    podcastLink: {
+      type: String,
+      trim: true,
+      default: "",
     },
     role: {
       type: String,
       enum: ["super_admin", "church_admin", "user", "admin"],
-      default: "church_admin", // Registered users are Church Admins by default
+      default: "church_admin",
       index: true,
     },
-    // Desktop & Mobile sharing limits for Church Admins
+    // Subscription & Tier System
+    subscriptionTier: {
+      type: String,
+      enum: ["trial", "free", "mini", "standard", "large", "premium"],
+      default: "trial",
+      index: true,
+    },
+    trialStartedAt: {
+      type: Date,
+      default: Date.now,
+    },
+    trialEndsAt: {
+      type: Date,
+      default: function() {
+        const d = new Date();
+        d.setMonth(d.getMonth() + 2); // 2 months trial
+        return d;
+      },
+    },
+    subscriptionExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    // Desktop & Mobile quotas & active device tracking
     licenseQuotas: {
       maxDesktops: {
         type: Number,
-        default: 2, // Maximum 2 desktop applications per church license
+        default: 1, // Default for 2-month Trial (Mini setup)
       },
       maxMobileUsers: {
         type: Number,
-        default: 5, // Maximum 5 mobile companion devices per church license
+        default: 3, // Default for 2-month Trial (Mini setup)
       },
       activeDesktops: [
         {
@@ -71,7 +187,11 @@ const userSchema = new mongoose.Schema(
     },
     graceExpiresAt: {
       type: Date,
-      required: true,
+      default: function() {
+        const d = new Date();
+        d.setMonth(d.getMonth() + 2);
+        return d;
+      },
     },
   },
   {
@@ -88,7 +208,6 @@ const userSchema = new mongoose.Schema(
   }
 );
 
-// Method to verify candidate password against stored bcrypt hash
 userSchema.methods.comparePassword = async function (candidatePassword) {
   if (!this.passwordHash) {
     throw new Error("Password hash not loaded on user model");
@@ -96,17 +215,76 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   return bcrypt.compare(candidatePassword, this.passwordHash);
 };
 
-// Static helper to compute grace expiry date from months
 userSchema.methods.isGraceExpired = function () {
-  if (!this.graceExpiresAt) return false;
-  return new Date() > new Date(this.graceExpiresAt);
+  const trialEnd = this.trialEndsAt || this.graceExpiresAt;
+  if (!trialEnd) return false;
+  return new Date() > new Date(trialEnd);
 };
 
-userSchema.statics.computeGraceExpiry = function (months = 3, startDate = new Date()) {
+userSchema.methods.getEffectiveTier = function () {
+  if (this.role === "super_admin" || this.role === "admin") {
+    return "premium";
+  }
+  if (
+    this.subscriptionTier &&
+    ["mini", "standard", "large", "premium"].includes(this.subscriptionTier)
+  ) {
+    if (!this.subscriptionExpiresAt || new Date(this.subscriptionExpiresAt) > new Date()) {
+      return this.subscriptionTier;
+    }
+  }
+  const trialEnd = this.trialEndsAt || this.graceExpiresAt;
+  if (trialEnd && new Date() <= new Date(trialEnd)) {
+    return "trial";
+  }
+  return "free";
+};
+
+userSchema.methods.getTrialRemainingDays = function () {
+  const trialEnd = this.trialEndsAt || this.graceExpiresAt;
+  if (!trialEnd) return 0;
+  const diffMs = new Date(trialEnd).getTime() - Date.now();
+  if (diffMs <= 0) return 0;
+  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+};
+
+userSchema.methods.getEntitlements = function () {
+  const tier = this.getEffectiveTier();
+  const trialEnd = this.trialEndsAt || this.graceExpiresAt || new Date();
+  const remainingDays = this.getTrialRemainingDays();
+  const isTrial = tier === "trial";
+  const isTrialExpired = !isTrial && tier === "free" && new Date() > new Date(trialEnd);
+  const features = PLAN_FEATURES[tier] || PLAN_FEATURES.free;
+  const quotas = PLAN_QUOTAS[tier] || PLAN_QUOTAS.free;
+
+  return {
+    tier,
+    isTrial,
+    isTrialExpired,
+    trialStartedAt: this.trialStartedAt || this.createdAt || new Date(),
+    trialEndsAt: trialEnd,
+    trialRemainingDays: remainingDays,
+    subscriptionExpiresAt: this.subscriptionExpiresAt,
+    features,
+    limits: quotas,
+  };
+};
+
+userSchema.statics.computeGraceExpiry = function (months = 2, startDate = new Date()) {
   const expiry = new Date(startDate);
   expiry.setMonth(expiry.getMonth() + months);
   return expiry;
 };
+
+userSchema.statics.computeTrialExpiry = function (months = 2, startDate = new Date()) {
+  const expiry = new Date(startDate);
+  expiry.setMonth(expiry.getMonth() + months);
+  return expiry;
+};
+
+userSchema.statics.PLAN_FEATURES = PLAN_FEATURES;
+userSchema.statics.PLAN_QUOTAS = PLAN_QUOTAS;
+userSchema.statics.AccountTier = AccountTier;
 
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 
