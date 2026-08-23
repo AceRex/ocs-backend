@@ -28,8 +28,9 @@ afterEach(async () => {
   for (const key in collections) {
     await collections[key].deleteMany({});
   }
-  const { loginAttemptTracker } = require('../src/middleware/rateLimiter');
+  const { loginAttemptTracker, clearRateLimits } = require('../src/middleware/rateLimiter');
   loginAttemptTracker.clearAll();
+  clearRateLimits();
 });
 
 afterAll(async () => {

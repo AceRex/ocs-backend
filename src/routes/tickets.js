@@ -5,7 +5,7 @@ const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth')
 const adminMiddleware = require('../middleware/admin');
 const { rateLimiter } = require('../middleware/rateLimiter');
 const { connectToDatabase } = require('../config/db');
-const { sendTicketNotification } = require('../utils/mailer');
+const { sendTicketNotification, sendTicketStatusNotification } = require('../utils/mailer');
 
 const router = express.Router();
 
@@ -262,15 +262,24 @@ router.patch(
         });
       }
 
+      const oldTicket = await Ticket.findById(id);
+      if (!oldTicket) {
+        return res.status(404).json({
+          error: 'not_found',
+          message: 'Ticket not found',
+        });
+      }
+
+      const statusChanged = status && status !== oldTicket.status;
+
       const ticket = await Ticket.findByIdAndUpdate(id, updates, {
         new: true,
         runValidators: true,
       });
 
-      if (!ticket) {
-        return res.status(404).json({
-          error: 'not_found',
-          message: 'Ticket not found',
+      if (statusChanged && ticket.email) {
+        sendTicketStatusNotification(ticket, status).catch((err) => {
+          console.error('[Ticket Status Notification] Failed to send email:', err);
         });
       }
 

@@ -193,6 +193,27 @@ const userSchema = new mongoose.Schema(
         return d;
       },
     },
+    // Password reset fields (FR-15.3)
+    resetPasswordToken: {
+      type: String,
+      default: null,
+      select: false,
+      index: true,
+    },
+    resetPasswordExpires: {
+      type: Date,
+      default: null,
+      select: false,
+    },
+    // Subscription reminder tracking fields
+    lastSubscriptionReminderSentAt: {
+      type: Date,
+      default: null,
+    },
+    lastSubscriptionReminderType: {
+      type: String,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -202,6 +223,8 @@ const userSchema = new mongoose.Schema(
         delete ret._id;
         delete ret.__v;
         delete ret.passwordHash;
+        delete ret.resetPasswordToken;
+        delete ret.resetPasswordExpires;
         return ret;
       },
     },

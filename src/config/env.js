@@ -31,20 +31,42 @@ const env = {
       "johnsonare0722@gmail.com, waveiosoftware@gmail.com"
     );
   },
+  get RESEND_API_KEY() {
+    return process.env.RESEND_API_KEY || "";
+  },
+  get RESEND_FROM_EMAIL() {
+    return process.env.RESEND_FROM_EMAIL || "OCS <onboarding@resend.dev>";
+  },
   get SMTP_HOST() {
     return process.env.SMTP_HOST || process.env.EMAIL_HOST || "";
   },
   get SMTP_PORT() {
-    return parseInt(process.env.SMTP_PORT || process.env.EMAIL_PORT || "587", 10);
+    return parseInt(
+      process.env.SMTP_PORT || process.env.EMAIL_PORT || "587",
+      10,
+    );
   },
   get SMTP_USER() {
-    return process.env.SMTP_USER || process.env.EMAIL_USER || process.env.GMAIL_USER || "";
+    return (
+      process.env.SMTP_USER ||
+      process.env.EMAIL_USER ||
+      process.env.GMAIL_USER ||
+      ""
+    );
   },
   get SMTP_PASS() {
-    return process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.GMAIL_APP_PASSWORD || "";
+    return (
+      process.env.SMTP_PASS ||
+      process.env.EMAIL_PASS ||
+      process.env.GMAIL_APP_PASSWORD ||
+      ""
+    );
   },
   get FROM_EMAIL() {
-    return process.env.FROM_EMAIL || `"OCS Support" <${process.env.SMTP_USER || "notifications@churchocs.com"}>`;
+    return (
+      process.env.FROM_EMAIL ||
+      `"OCS Support" <${process.env.SMTP_USER || "notifications@churchocs.com"}>`
+    );
   },
 };
 

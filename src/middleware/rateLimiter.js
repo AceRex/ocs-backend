@@ -3,16 +3,18 @@
  * Provides sliding-window IP rate limiting and failed attempt lockout tracking.
  */
 
-// In-memory store for rate limiting windows
-const requestCounts = new Map();
+// Global registry of all active rate limiter stores for clean test teardowns
+const allRateLimitStores = new Set();
 const failedAttempts = new Map();
 
 // Periodic cleanup of stale entries every 5 minutes
 setInterval(() => {
   const now = Date.now();
-  for (const [key, record] of requestCounts.entries()) {
-    if (now > record.resetTime) {
-      requestCounts.delete(key);
+  for (const store of allRateLimitStores) {
+    for (const [key, record] of store.entries()) {
+      if (now > record.resetTime) {
+        store.delete(key);
+      }
     }
   }
   for (const [key, record] of failedAttempts.entries()) {
@@ -24,6 +26,8 @@ setInterval(() => {
 
 /**
  * Standard request rate limiter middleware.
+ * Isolated per-route store ensures different endpoints do not cross-pollute quota.
+ * 
  * @param {Object} options
  * @param {number} options.windowMs Window duration in ms (default 15 mins)
  * @param {number} options.max Max allowed requests per window
@@ -34,14 +38,17 @@ function rateLimiter({
   max = 100,
   message = 'Too many requests. Please try again later.',
 } = {}) {
+  const store = new Map();
+  allRateLimitStores.add(store);
+
   return (req, res, next) => {
     const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown-ip';
     const now = Date.now();
 
-    let record = requestCounts.get(ip);
+    let record = store.get(ip);
     if (!record || now > record.resetTime) {
       record = { count: 1, resetTime: now + windowMs };
-      requestCounts.set(ip, record);
+      store.set(ip, record);
       return next();
     }
 
@@ -118,11 +125,21 @@ const loginAttemptTracker = {
 
   clearAll() {
     failedAttempts.clear();
-    requestCounts.clear();
+    for (const store of allRateLimitStores) {
+      store.clear();
+    }
   },
 };
+
+function clearRateLimits() {
+  failedAttempts.clear();
+  for (const store of allRateLimitStores) {
+    store.clear();
+  }
+}
 
 module.exports = {
   rateLimiter,
   loginAttemptTracker,
+  clearRateLimits,
 };

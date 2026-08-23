@@ -1,11 +1,18 @@
 const express = require("express");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const RevokedToken = require("../models/RevokedToken");
 const { signToken, verifyToken, decodeToken } = require("../utils/jwt");
 const { authMiddleware } = require("../middleware/auth");
 const { adminMiddleware, superAdminMiddleware } = require("../middleware/admin");
-const { loginAttemptTracker } = require("../middleware/rateLimiter");
+const { rateLimiter, loginAttemptTracker } = require("../middleware/rateLimiter");
+const {
+  sendWelcomeEmail,
+  sendPasswordResetEmail,
+  sendSubscriptionReminderEmail,
+  checkAndSendSubscriptionReminders,
+} = require("../utils/emailService");
 const { connectToDatabase } = require("../config/db");
 
 const router = express.Router();
@@ -139,6 +146,11 @@ const handleGeneralRegister = async (req, res, next) => {
     });
 
     const { token } = signToken(user);
+
+    // Dispatch welcome email asynchronously (FR-15.2 item 3)
+    sendWelcomeEmail(user).catch((err) => {
+      console.error("[Welcome Email] Failed to send welcome email:", err.message);
+    });
 
     res.status(201).json({
       success: true,
@@ -777,8 +789,121 @@ router.post("/device/register", authMiddleware, async (req, res, next) => {
   }
 });
 
-module.exports = router;
+/**
+ * Rate limiter for forgot-password endpoint (max 5 requests per 15 minutes per IP)
+ */
+const forgotPasswordLimiter = rateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: "Too many password reset requests from this IP. Please try again later.",
+});
 
+/**
+ * POST /auth/forgot-password
+ * Public endpoint to request a password reset email (FR-15.3).
+ * Generates a single-use token, stores only its SHA-256 hash in DB with 1h expiry,
+ * and sends raw token in reset email. Always returns generic success to avoid enumeration.
+ */
+router.post("/forgot-password", forgotPasswordLimiter, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { email } = req.body;
+
+    if (!email || typeof email !== "string" || !email.trim()) {
+      return res.status(400).json({
+        error: "missing_fields",
+        message: "Email address is required",
+      });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    if (!EMAIL_REGEX.test(cleanEmail)) {
+      return res.status(400).json({
+        error: "invalid_email",
+        message: "Please provide a valid email address",
+      });
+    }
+
+    // Always generate token and hash to preserve constant-time execution
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const hashedToken = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+    const user = await User.findOne({ email: cleanEmail });
+    if (user) {
+      user.resetPasswordToken = hashedToken;
+      user.resetPasswordExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour expiry
+      await user.save();
+
+      // Dispatch password reset email asynchronously via Resend
+      sendPasswordResetEmail(user, rawToken).catch((err) => {
+        console.error("[Password Reset Email] Failed to send email:", err.message);
+      });
+    }
+
+    // Generic response preventing account enumeration (FR-15.3)
+    res.json({
+      success: true,
+      message: "If an account with that email exists, password reset instructions have been sent.",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /auth/reset-password
+ * Public endpoint to consume single-use reset token and update password (FR-15.3).
+ */
+router.post("/reset-password", async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      return res.status(400).json({
+        error: "missing_fields",
+        message: "Reset token and new password are required",
+      });
+    }
+
+    if (typeof password !== "string" || password.length < 8) {
+      return res.status(400).json({
+        error: "weak_password",
+        message: "Password must be at least 8 characters long",
+      });
+    }
+
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(String(token).trim())
+      .digest("hex");
+
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpires: { $gt: new Date() },
+    }).select("+passwordHash +resetPasswordToken +resetPasswordExpires");
+
+    if (!user) {
+      return res.status(400).json({
+        error: "invalid_or_expired_token",
+        message: "Password reset token is invalid, expired, or has already been used.",
+      });
+    }
+
+    // Hash new password and invalidate token immediately (single-use)
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.resetPasswordToken = null;
+    user.resetPasswordExpires = null;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Password has been successfully reset. You can now log in with your new password.",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * PUT /auth/users/:id/tier & /auth/user/:id/tier
@@ -832,3 +957,23 @@ router.put("/user/:id/tier", authMiddleware, superAdminMiddleware, async (req, r
   req.url = req.url.replace("/user/", "/users/");
   router.handle(req, res, next);
 });
+
+/**
+ * POST /auth/admin/subscription-reminders
+ * Admin/Cron trigger to execute expiration reminder sweep for users expiring in 10-0 days.
+ */
+router.post("/admin/subscription-reminders", authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const results = await checkAndSendSubscriptionReminders();
+    res.json({
+      success: true,
+      message: `Subscription reminder sweep completed: ${results.sent} sent, ${results.skipped} skipped, ${results.errors} errors out of ${results.totalChecked} checked.`,
+      results,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+module.exports = router;
