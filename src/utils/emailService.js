@@ -1,8 +1,10 @@
 const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const env = require('../config/env');
 const User = require('../models/User');
 
 let resendClient = null;
+let smtpTransporter = null;
 
 function getResendClient() {
   if (resendClient) return resendClient;
@@ -10,6 +12,32 @@ function getResendClient() {
     resendClient = new Resend(env.RESEND_API_KEY);
   }
   return resendClient;
+}
+
+function getSmtpTransporter() {
+  if (smtpTransporter) return smtpTransporter;
+
+  if (env.SMTP_HOST) {
+    smtpTransporter = nodemailer.createTransport({
+      host: env.SMTP_HOST,
+      port: env.SMTP_PORT,
+      secure: env.SMTP_PORT === 465,
+      auth: {
+        user: env.SMTP_USER,
+        pass: env.SMTP_PASS,
+      },
+    });
+  } else if (env.SMTP_USER && env.SMTP_PASS) {
+    smtpTransporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: env.SMTP_USER,
+        pass: env.SMTP_PASS,
+      },
+    });
+  }
+
+  return smtpTransporter;
 }
 
 /**
@@ -144,44 +172,77 @@ async function sendEmail({ to, subject, html, text, from }) {
     return { skipped: true, reason: 'no_recipients' };
   }
 
-  const sender = from || env.RESEND_FROM_EMAIL;
+  const sender = from || env.RESEND_FROM_EMAIL || env.FROM_EMAIL || "OCS <onboarding@resend.dev>";
 
-  // In test environment or without an API key, simulate delivery
-  if (env.NODE_ENV === 'test' || !env.RESEND_API_KEY) {
+  // In test environment, return simulated delivery
+  if (env.NODE_ENV === 'test') {
     const simulatedId = `sim_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    if (env.NODE_ENV !== 'test') {
-      console.log(`\n========================================`);
-      console.log(`[Email Dispatched (Resend API Key Not Configured)]`);
-      console.log(`From: ${sender}`);
-      console.log(`To: ${cleanRecipients.join(', ')}`);
-      console.log(`Subject: ${subject}`);
-      console.log(`Message Preview:\n${text || html.replace(/<[^>]+>/g, ' ').slice(0, 200)}...`);
-      console.log(`========================================\n`);
-    }
     return { success: true, messageId: simulatedId, simulated: true };
   }
 
-  try {
-    const resend = getResendClient();
-    const response = await resend.emails.send({
-      from: sender,
-      to: cleanRecipients,
-      subject,
-      html,
-      text: text || html.replace(/<[^>]+>/g, ' '),
-    });
+  let lastError = null;
 
-    if (response.error) {
-      console.error('[EmailService] Resend API returned error:', response.error);
-      return { success: false, error: response.error.message || response.error };
+  // 1. Primary Engine: Resend HTTP API
+  if (env.RESEND_API_KEY) {
+    try {
+      const resend = getResendClient();
+      const response = await resend.emails.send({
+        from: sender,
+        to: cleanRecipients,
+        subject,
+        html,
+        text: text || html.replace(/<[^>]+>/g, ' '),
+      });
+
+      if (!response.error) {
+        console.log(`[EmailService] ✅ Email delivered via Resend to ${cleanRecipients.join(', ')} (ID: ${response.data?.id})`);
+        return { success: true, provider: 'resend', messageId: response.data?.id, data: response.data };
+      }
+
+      lastError = response.error.message || response.error;
+      console.warn(`[EmailService] ⚠️ Resend dispatch error:`, lastError);
+
+      if (response.error.statusCode === 403 || String(lastError).includes('testing emails') || String(lastError).includes('verify a domain')) {
+        console.warn(`[EmailService] ℹ️ Resend Domain Verification Required: Resend's test sender (onboarding@resend.dev) can only send to your account email (waveiosoftware@gmail.com). To send to real customer emails, verify your domain at https://resend.com/domains and set RESEND_FROM_EMAIL (e.g. notifications@churchocs.com) in .env.`);
+      }
+    } catch (err) {
+      lastError = err.message;
+      console.warn(`[EmailService] ⚠️ Resend exception:`, err.message);
     }
-
-    console.log(`[EmailService] Email sent successfully via Resend to ${cleanRecipients.join(', ')} (ID: ${response.data?.id})`);
-    return { success: true, messageId: response.data?.id, data: response.data };
-  } catch (err) {
-    console.error('[EmailService] Unexpected error sending email via Resend:', err.message);
-    return { success: false, error: err.message };
   }
+
+  // 2. Secondary Engine: Nodemailer SMTP Fallback
+  const smtp = getSmtpTransporter();
+  if (smtp) {
+    try {
+      const info = await smtp.sendMail({
+        from: env.FROM_EMAIL || sender,
+        to: cleanRecipients,
+        subject,
+        html,
+        text: text || html.replace(/<[^>]+>/g, ' '),
+      });
+      console.log(`[EmailService] ✅ Email delivered via SMTP fallback to ${cleanRecipients.join(', ')} (Message ID: ${info.messageId})`);
+      return { success: true, provider: 'smtp', messageId: info.messageId };
+    } catch (err) {
+      lastError = err.message;
+      console.error(`[EmailService] ❌ SMTP fallback error:`, err.message);
+    }
+  }
+
+  // 3. Fallback when neither engine was configured
+  if (!env.RESEND_API_KEY && !smtp) {
+    console.log(`\n========================================`);
+    console.log(`[Email Dispatched (No Provider Credentials Configured)]`);
+    console.log(`From: ${sender}`);
+    console.log(`To: ${cleanRecipients.join(', ')}`);
+    console.log(`Subject: ${subject}`);
+    console.log(`Message Preview:\n${text || html.replace(/<[^>]+>/g, ' ').slice(0, 200)}...`);
+    console.log(`========================================\n`);
+    return { success: true, simulated: true, reason: 'no_provider_configured' };
+  }
+
+  return { success: false, error: lastError || 'Failed to dispatch email via configured providers.' };
 }
 
 /**
