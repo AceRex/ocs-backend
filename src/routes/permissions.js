@@ -3,6 +3,8 @@ const PlanPermission = require("../models/PlanPermission");
 const User = require("../models/User");
 const { connectToDatabase } = require("../config/db");
 
+const { authMiddleware } = require("../middleware/auth");
+const { superAdminMiddleware } = require("../middleware/admin");
 const router = express.Router();
 
 const INITIAL_PERMISSIONS = [
@@ -74,7 +76,7 @@ router.get("/", async (req, res, next) => {
  * POST /api/permissions & /api/admin/permissions
  * Create a new custom permission
  */
-router.post("/", async (req, res, next) => {
+router.post("/", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     const { key, name, category = "custom", description = "", enabledTiers = [] } = req.body;
@@ -119,7 +121,7 @@ router.post("/", async (req, res, next) => {
  * PUT /api/permissions/toggle & /api/admin/permissions/toggle
  * Toggle permission on/off for a specific tier
  */
-router.put("/toggle", async (req, res, next) => {
+router.put("/toggle", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     const { key, tier, enabled } = req.body;
@@ -174,7 +176,7 @@ router.put("/toggle", async (req, res, next) => {
 /**
  * DELETE /api/permissions/:key
  */
-router.delete("/:key", async (req, res, next) => {
+router.delete("/:key", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     const { key } = req.params;
@@ -266,7 +268,7 @@ const updateUserTierHandler = async (req, res, next) => {
   }
 };
 
-router.put("/user/:id/tier", updateUserTierHandler);
-router.put("/users/:id/tier", updateUserTierHandler);
+router.put("/user/:id/tier", authMiddleware, superAdminMiddleware, updateUserTierHandler);
+router.put("/users/:id/tier", authMiddleware, superAdminMiddleware, updateUserTierHandler);
 
 module.exports = router;

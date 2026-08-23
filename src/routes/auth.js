@@ -4,6 +4,7 @@ const User = require("../models/User");
 const RevokedToken = require("../models/RevokedToken");
 const { signToken, verifyToken, decodeToken } = require("../utils/jwt");
 const { authMiddleware } = require("../middleware/auth");
+const { adminMiddleware, superAdminMiddleware } = require("../middleware/admin");
 const { loginAttemptTracker } = require("../middleware/rateLimiter");
 const { connectToDatabase } = require("../config/db");
 
@@ -233,8 +234,8 @@ const handleAdminRegister = async (req, res, next) => {
   }
 };
 
-router.post("/register/admin", handleAdminRegister);
-router.post("/admin/register", handleAdminRegister);
+router.post("/register/admin", authMiddleware, superAdminMiddleware, handleAdminRegister);
+router.post("/admin/register", authMiddleware, superAdminMiddleware, handleAdminRegister);
 
 /**
  * POST /auth/login
@@ -481,15 +482,15 @@ const handleGetAdminUsers = async (req, res, next) => {
   }
 };
 
-router.get("/users/admin", handleGetAdminUsers);
-router.get("/admin/users", handleGetAdminUsers);
-router.get("/admins", handleGetAdminUsers);
+router.get("/users/admin", authMiddleware, superAdminMiddleware, handleGetAdminUsers);
+router.get("/admin/users", authMiddleware, superAdminMiddleware, handleGetAdminUsers);
+router.get("/admins", authMiddleware, superAdminMiddleware, handleGetAdminUsers);
 
 /**
  * GET /auth/users
  * Customer Churches & Ministries list
  */
-router.get("/users", async (req, res, next) => {
+router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     const query = req.query.all === "true"
@@ -559,7 +560,7 @@ router.get("/users", async (req, res, next) => {
 /**
  * POST /auth/users
  */
-router.post("/users", async (req, res, next) => {
+router.post("/users", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     const {
@@ -639,7 +640,7 @@ router.post("/users", async (req, res, next) => {
 /**
  * DELETE /auth/users/:id
  */
-router.delete("/users/:id", async (req, res, next) => {
+router.delete("/users/:id", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     const { id } = req.params;
@@ -782,7 +783,7 @@ module.exports = router;
 /**
  * PUT /auth/users/:id/tier & /auth/user/:id/tier
  */
-router.put("/users/:id/tier", async (req, res, next) => {
+router.put("/users/:id/tier", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     const { id } = req.params;
@@ -827,7 +828,7 @@ router.put("/users/:id/tier", async (req, res, next) => {
     next(err);
   }
 });
-router.put("/user/:id/tier", async (req, res, next) => {
+router.put("/user/:id/tier", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   req.url = req.url.replace("/user/", "/users/");
   router.handle(req, res, next);
 });
