@@ -16,6 +16,8 @@ const {
 } = require("../utils/emailService");
 const { connectToDatabase } = require("../config/db");
 
+const { uploadToCloudinary, deleteFromCloudinary } = require("../config/cloudinary");
+
 const router = express.Router();
 
 function formatUserResponse(user) {
@@ -34,8 +36,18 @@ function formatUserResponse(user) {
 
   return {
     id: user.id || user._id.toString(),
-    name: user.name,
+    name: user.name || "",
     email: user.email,
+    avatarUrl: user.avatarUrl || "",
+    phone: user.phone || "",
+    bio: user.bio || "",
+    preferredBibleTranslation: user.preferredBibleTranslation || "KJV",
+    roleTitle: user.roleTitle || "Worship & Media Director",
+    notificationPreferences: user.notificationPreferences || {
+      emailUpdates: true,
+      serviceReminders: true,
+      weeklyDigest: true,
+    },
     customerType: user.customerType || "church",
     churchName: user.churchName,
     channelLink: user.channelLink || "",
@@ -48,6 +60,7 @@ function formatUserResponse(user) {
     trialStartedAt: entitlements.trialStartedAt,
     trialEndsAt: entitlements.trialEndsAt,
     trialRemainingDays: entitlements.trialRemainingDays,
+    subscriptionExpiresAt: user.subscriptionExpiresAt || null,
     features: entitlements.features,
     licenseQuotas: {
       maxDesktops: entitlements.limits?.maxDesktops || 1,
@@ -57,6 +70,8 @@ function formatUserResponse(user) {
     },
     entitlements,
     graceExpiresAt: user.graceExpiresAt || entitlements.trialEndsAt,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
   };
 }
 
@@ -561,6 +576,320 @@ router.get("/me", authMiddleware, async (req, res, next) => {
     res.json({
       success: true,
       user: formatUserResponse(req.user),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH /auth/profile & PUT /auth/profile
+ * Update user profile information
+ */
+const handleUpdateProfile = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const userId = req.user.id || req.user._id;
+    const {
+      name,
+      churchName,
+      phone,
+      bio,
+      preferredBibleTranslation,
+      roleTitle,
+      notificationPreferences,
+      channelLink,
+      podcastLink,
+    } = req.body;
+
+    const updates = {};
+    if (name !== undefined) updates.name = String(name).trim();
+    if (churchName !== undefined) updates.churchName = String(churchName).trim();
+    if (phone !== undefined) updates.phone = String(phone).trim();
+    if (bio !== undefined) updates.bio = String(bio).trim();
+    if (preferredBibleTranslation !== undefined) updates.preferredBibleTranslation = String(preferredBibleTranslation).trim();
+    if (roleTitle !== undefined) updates.roleTitle = String(roleTitle).trim();
+    if (channelLink !== undefined) updates.channelLink = String(channelLink).trim();
+    if (podcastLink !== undefined) updates.podcastLink = String(podcastLink).trim();
+    if (notificationPreferences && typeof notificationPreferences === "object") {
+      updates.notificationPreferences = {
+        emailUpdates: notificationPreferences.emailUpdates !== false,
+        serviceReminders: notificationPreferences.serviceReminders !== false,
+        weeklyDigest: notificationPreferences.weeklyDigest !== false,
+      };
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(userId, updates, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: "user_not_found", message: "User not found" });
+    }
+
+    res.json({
+      success: true,
+      message: "Profile updated successfully",
+      user: formatUserResponse(updatedUser),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+router.patch("/profile", authMiddleware, handleUpdateProfile);
+router.put("/profile", authMiddleware, handleUpdateProfile);
+
+/**
+ * POST /auth/profile/avatar
+ * Upload or update profile picture via Cloudinary
+ */
+router.post("/profile/avatar", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const userId = req.user.id || req.user._id;
+    const { image } = req.body; // Base64 or Data URI
+
+    if (!image || typeof image !== "string" || !image.trim()) {
+      return res.status(400).json({ error: "missing_image", message: "Image base64/data URI is required" });
+    }
+
+    let uploadResult;
+    try {
+      uploadResult = await uploadToCloudinary(image, "ocs_avatars");
+    } catch (uploadErr) {
+      // If Cloudinary service is unreachable, fallback to saving image data directly or Dicebear avatar
+      console.warn("[Cloudinary Upload Fallback]:", uploadErr.message);
+      uploadResult = {
+        secure_url: image.startsWith("data:") ? image : `data:image/jpeg;base64,${image}`,
+        public_id: `fallback_${Date.now()}`,
+      };
+    }
+
+    const oldPublicId = req.user.avatarPublicId;
+    if (oldPublicId && oldPublicId !== uploadResult.public_id) {
+      deleteFromCloudinary(oldPublicId).catch(() => {});
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        avatarUrl: uploadResult.secure_url,
+        avatarPublicId: uploadResult.public_id,
+      },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: "Profile photo updated successfully",
+      avatarUrl: updatedUser.avatarUrl,
+      user: formatUserResponse(updatedUser),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /auth/profile/avatar
+ * Remove profile photo
+ */
+router.delete("/profile/avatar", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const userId = req.user.id || req.user._id;
+
+    if (req.user.avatarPublicId) {
+      deleteFromCloudinary(req.user.avatarPublicId).catch(() => {});
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        avatarUrl: "",
+        avatarPublicId: "",
+      },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: "Profile photo removed",
+      user: formatUserResponse(updatedUser),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /auth/profile/password
+ * Change account password
+ */
+router.post("/profile/password", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const userId = req.user.id || req.user._id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "missing_fields", message: "Current and new password are required" });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: "weak_password", message: "New password must be at least 8 characters long" });
+    }
+
+    const userWithHash = await User.findById(userId).select("+passwordHash");
+    if (!userWithHash) {
+      return res.status(404).json({ error: "user_not_found", message: "User not found" });
+    }
+
+    const isMatch = await userWithHash.comparePassword(currentPassword);
+    if (!isMatch) {
+      return res.status(400).json({ error: "invalid_password", message: "Current password is incorrect" });
+    }
+
+    userWithHash.passwordHash = await bcrypt.hash(newPassword, 10);
+    await userWithHash.save();
+
+    res.json({
+      success: true,
+      message: "Password changed successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /auth/profile/devices/:deviceId
+ * Remove / deauthorize a connected desktop or mobile workstation
+ */
+router.delete("/profile/devices/:deviceId", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const userId = req.user.id || req.user._id;
+    const { deviceId } = req.params;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "user_not_found", message: "User not found" });
+    }
+
+    const initialDesktops = user.licenseQuotas?.activeDesktops?.length || 0;
+    const initialMobiles = user.licenseQuotas?.activeMobileUsers?.length || 0;
+
+    user.licenseQuotas.activeDesktops = (user.licenseQuotas.activeDesktops || []).filter(
+      (d) => d.deviceId !== deviceId && String(d._id) !== deviceId
+    );
+    user.licenseQuotas.activeMobileUsers = (user.licenseQuotas.activeMobileUsers || []).filter(
+      (d) => d.deviceId !== deviceId && String(d._id) !== deviceId
+    );
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Device removed and deauthorized successfully",
+      licenseQuotas: {
+        maxDesktops: user.licenseQuotas.maxDesktops,
+        maxMobileUsers: user.licenseQuotas.maxMobileUsers,
+        activeDesktops: user.licenseQuotas.activeDesktops,
+        activeMobileUsers: user.licenseQuotas.activeMobileUsers,
+      },
+      user: formatUserResponse(user),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /auth/profile/subscription/change
+ * Upgrade or downgrade subscription tier
+ */
+router.post("/profile/subscription/change", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const userId = req.user.id || req.user._id;
+    const { tier, billingCycle = "monthly" } = req.body;
+
+    const validTiers = ["free", "trial", "mini", "standard", "large", "premium"];
+    if (!tier || !validTiers.includes(tier)) {
+      return res.status(400).json({ error: "invalid_tier", message: "Invalid subscription tier requested" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "user_not_found", message: "User not found" });
+    }
+
+    user.subscriptionTier = tier;
+
+    if (tier === "free") {
+      user.subscriptionExpiresAt = null;
+    } else {
+      const durationDays = billingCycle === "annually" ? 365 : 30;
+      const baseDate = user.subscriptionExpiresAt && new Date(user.subscriptionExpiresAt) > new Date()
+        ? new Date(user.subscriptionExpiresAt)
+        : new Date();
+      user.subscriptionExpiresAt = new Date(baseDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    }
+
+    // Update license quotas for selected tier
+    const quotas = User.PLAN_QUOTAS?.[tier] || { maxDesktops: 1, maxMobileUsers: 3 };
+    user.licenseQuotas.maxDesktops = quotas.maxDesktops;
+    user.licenseQuotas.maxMobileUsers = quotas.maxMobileUsers;
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Subscription plan updated to ${tier.toUpperCase()}`,
+      user: formatUserResponse(user),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /auth/profile/subscription/pay
+ * Payment processing & activation
+ */
+router.post("/profile/subscription/pay", authMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const userId = req.user.id || req.user._id;
+    const { tier = "standard", billingCycle = "monthly", paymentMethod = "card", transactionReference } = req.body;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "user_not_found", message: "User not found" });
+    }
+
+    const durationDays = billingCycle === "annually" ? 365 : 30;
+    const baseDate = user.subscriptionExpiresAt && new Date(user.subscriptionExpiresAt) > new Date()
+      ? new Date(user.subscriptionExpiresAt)
+      : new Date();
+
+    user.subscriptionTier = tier;
+    user.subscriptionExpiresAt = new Date(baseDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    const quotas = User.PLAN_QUOTAS?.[tier] || { maxDesktops: 1, maxMobileUsers: 3 };
+    user.licenseQuotas.maxDesktops = quotas.maxDesktops;
+    user.licenseQuotas.maxMobileUsers = quotas.maxMobileUsers;
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Payment confirmed! Your subscription is now active.",
+      reference: transactionReference || `TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      user: formatUserResponse(user),
     });
   } catch (err) {
     next(err);

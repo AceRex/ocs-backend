@@ -112,6 +112,39 @@ const userSchema = new mongoose.Schema(
       required: [true, "Organization, Channel, or Podcast name is required"],
       trim: true,
     },
+    avatarUrl: {
+      type: String,
+      default: "",
+    },
+    avatarPublicId: {
+      type: String,
+      default: "",
+    },
+    phone: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    bio: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    preferredBibleTranslation: {
+      type: String,
+      trim: true,
+      default: "KJV",
+    },
+    roleTitle: {
+      type: String,
+      trim: true,
+      default: "Worship & Media Director",
+    },
+    notificationPreferences: {
+      emailUpdates: { type: Boolean, default: true },
+      serviceReminders: { type: Boolean, default: true },
+      weeklyDigest: { type: Boolean, default: true },
+    },
     channelLink: {
       type: String,
       trim: true,
