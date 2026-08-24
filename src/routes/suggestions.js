@@ -80,30 +80,41 @@ router.post('/suggestions', suggestionSubmitLimiter, optionalAuthMiddleware, asy
 
 /**
  * GET /suggestions
- * List suggestions with status, category, and search filters
+ * List suggestions with status, category, sorting, and pagination (default 10 per page)
  */
 router.get('/suggestions', async (req, res, next) => {
   try {
     await connectToDatabase();
-    const { status, category, search, limit = 50, page = 1 } = req.query;
+    const { status, category, search, sortBy = 'popular', limit = 10, page = 1 } = req.query;
 
-    const query = {};
+    const query = { isPublic: { $ne: false } };
     if (status && status !== 'all') query.status = status;
     if (category && category !== 'all') query.category = category;
-    if (search) {
+    if (search && String(search).trim()) {
+      const regex = new RegExp(String(search).trim(), 'i');
       query.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-        { church: { $regex: search, $options: 'i' } },
+        { title: regex },
+        { description: regex },
+        { church: regex },
+        { name: regex },
       ];
     }
 
-    const parsedLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+    const parsedLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
     const parsedPage = Math.max(1, parseInt(page, 10) || 1);
     const skip = (parsedPage - 1) * parsedLimit;
 
+    let sortObj = { upvotes: -1, createdAt: -1 };
+    if (sortBy === 'newest') {
+      sortObj = { createdAt: -1 };
+    } else if (sortBy === 'comments') {
+      sortObj = { 'comments.0': -1, createdAt: -1 };
+    } else if (sortBy === 'highest_upvotes') {
+      sortObj = { upvotes: -1, downvotes: 1 };
+    }
+
     const [suggestions, total] = await Promise.all([
-      Suggestion.find(query).sort({ upvotes: -1, createdAt: -1 }).skip(skip).limit(parsedLimit),
+      Suggestion.find(query).sort(sortObj).skip(skip).limit(parsedLimit).lean(),
       Suggestion.countDocuments(query),
     ]);
 
@@ -128,10 +139,18 @@ router.post('/suggestions/:id/upvote', async (req, res, next) => {
   try {
     await connectToDatabase();
     const { id } = req.params;
+    const { voterKey } = req.body || {};
+
+    const updateOps = { $inc: { upvotes: 1 } };
+    if (voterKey) {
+      updateOps.$push = {
+        voters: { voterKey: String(voterKey), voteType: 'up', createdAt: new Date() },
+      };
+    }
 
     const suggestion = await Suggestion.findByIdAndUpdate(
       id,
-      { $inc: { upvotes: 1 } },
+      updateOps,
       { new: true }
     );
 
@@ -139,7 +158,136 @@ router.post('/suggestions/:id/upvote', async (req, res, next) => {
       return res.status(404).json({ error: 'not_found', message: 'Suggestion not found' });
     }
 
-    res.json({ success: true, upvotes: suggestion.upvotes });
+    res.json({
+      success: true,
+      upvotes: suggestion.upvotes,
+      downvotes: suggestion.downvotes || 0,
+      suggestion,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /suggestions/:id/downvote
+ * Downvote a suggestion
+ */
+router.post('/suggestions/:id/downvote', async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+    const { voterKey } = req.body || {};
+
+    const updateOps = { $inc: { downvotes: 1 } };
+    if (voterKey) {
+      updateOps.$push = {
+        voters: { voterKey: String(voterKey), voteType: 'down', createdAt: new Date() },
+      };
+    }
+
+    const suggestion = await Suggestion.findByIdAndUpdate(
+      id,
+      updateOps,
+      { new: true }
+    );
+
+    if (!suggestion) {
+      return res.status(404).json({ error: 'not_found', message: 'Suggestion not found' });
+    }
+
+    res.json({
+      success: true,
+      upvotes: suggestion.upvotes,
+      downvotes: suggestion.downvotes || 0,
+      suggestion,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /suggestions/:id/comments
+ * Add a community comment to a feature idea / mini blog
+ */
+router.post('/suggestions/:id/comments', optionalAuthMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+    const { name, email, church, content } = req.body;
+
+    if (!content || !String(content).trim()) {
+      return res.status(400).json({ error: 'missing_content', message: 'Comment content is required' });
+    }
+
+    const newComment = {
+      commentId: `cm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: (name || (req.user ? req.user.name : 'Church Volunteer')).trim(),
+      email: (email || (req.user ? req.user.email : '')).trim(),
+      church: (church || (req.user ? req.user.churchName : 'Ministry Partner')).trim(),
+      content: String(content).trim(),
+      createdAt: new Date(),
+    };
+
+    const suggestion = await Suggestion.findByIdAndUpdate(
+      id,
+      { $push: { comments: newComment } },
+      { new: true }
+    );
+
+    if (!suggestion) {
+      return res.status(404).json({ error: 'not_found', message: 'Suggestion not found' });
+    }
+
+    emitAdminNotification({
+      id: `sug-cm-${newComment.commentId}`,
+      type: 'suggestion',
+      title: `New Comment on: "${suggestion.title}"`,
+      summary: `${newComment.name} (${newComment.church}): "${newComment.content.slice(0, 100)}..."`,
+      category: 'Suggestion Discussion',
+      status: suggestion.status,
+      badge: 'Community Comment',
+      timestamp: newComment.createdAt,
+      targetUrl: '/admin/suggestions',
+      isUnread: true,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Comment posted successfully',
+      comment: newComment,
+      comments: suggestion.comments,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /suggestions/:id/comments/:commentId
+ * Admin deletes an inappropriate comment
+ */
+router.delete('/suggestions/:id/comments/:commentId', authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id, commentId } = req.params;
+
+    const suggestion = await Suggestion.findByIdAndUpdate(
+      id,
+      { $pull: { comments: { commentId } } },
+      { new: true }
+    );
+
+    if (!suggestion) {
+      return res.status(404).json({ error: 'not_found', message: 'Suggestion not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Comment deleted successfully',
+      comments: suggestion.comments,
+    });
   } catch (err) {
     next(err);
   }

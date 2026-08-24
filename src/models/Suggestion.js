@@ -59,6 +59,30 @@ const suggestionSchema = new mongoose.Schema(
       type: Number,
       default: 1,
     },
+    downvotes: {
+      type: Number,
+      default: 0,
+    },
+    voters: [
+      {
+        voterKey: { type: String, required: true },
+        voteType: { type: String, enum: ['up', 'down'], required: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    comments: [
+      {
+        commentId: {
+          type: String,
+          default: () => `cm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        },
+        name: { type: String, required: true, trim: true },
+        email: { type: String, trim: true, default: '' },
+        church: { type: String, trim: true, default: 'Church Tech Team' },
+        content: { type: String, required: true, trim: true },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
     adminNotes: {
       type: String,
       default: '',
