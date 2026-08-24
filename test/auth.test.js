@@ -236,4 +236,60 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.error).toBe("unauthorized");
     });
   });
+
+  describe("POST /api/auth/guest-check (Hardware Anti-Tamper)", () => {
+    const testMachineId = "hw_test_machine_uuid_abcdef123456";
+
+    it("registers new machineId and grants 60-minute guest session", async () => {
+      const res = await request(app)
+        .post("/api/auth/guest-check")
+        .send({ machineId: testMachineId, platform: "darwin" })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.machineId).toBe(testMachineId);
+      expect(res.body.isExpired).toBe(false);
+      expect(res.body.remainingMinutes).toBe(60);
+      expect(res.body.remainingSeconds).toBeGreaterThanOrEqual(3590);
+    });
+
+    it("persists device and maintains single countdown for subsequent checks", async () => {
+      const res = await request(app)
+        .post("/api/auth/guest-check")
+        .send({ machineId: testMachineId })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.isExpired).toBe(false);
+    });
+
+    it("flags machine as expired when 1 hour has elapsed", async () => {
+      const GuestDevice = require("../src/models/GuestDevice");
+      // Create backdated expired device record
+      await GuestDevice.create({
+        machineId: testMachineId,
+        firstSeenAt: new Date(Date.now() - 3605000),
+        guestExpiresAt: new Date(Date.now() - 5000),
+      });
+
+      const res = await request(app)
+        .post("/api/auth/guest-check")
+        .send({ machineId: testMachineId })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.isExpired).toBe(true);
+      expect(res.body.remainingSeconds).toBe(0);
+      expect(res.body.remainingMinutes).toBe(0);
+    });
+
+    it("rejects missing or invalid machineId with 400", async () => {
+      const res = await request(app)
+        .post("/api/auth/guest-check")
+        .send({ machineId: "short" })
+        .expect(400);
+
+      expect(res.body.error).toBe("invalid_machine_id");
+    });
+  });
 });

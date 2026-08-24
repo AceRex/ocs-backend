@@ -8,6 +8,7 @@ const testimonialRoutes = require('./routes/testimonials');
 const ticketRoutes = require('./routes/tickets');
 const faqRoutes = require('./routes/faqs');
 const permissionsRoutes = require('./routes/permissions');
+const suggestionRoutes = require('./routes/suggestions');
 
 const app = express();
 
@@ -46,6 +47,9 @@ app.use('/', ticketRoutes);
 
 app.use('/api', faqRoutes);
 app.use('/', faqRoutes);
+
+app.use('/api', suggestionRoutes);
+app.use('/', suggestionRoutes);
 
 app.use('/api/permissions', permissionsRoutes);
 app.use('/api/admin/permissions', permissionsRoutes);

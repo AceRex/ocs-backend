@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const RevokedToken = require("../models/RevokedToken");
+const GuestDevice = require("../models/GuestDevice");
 const { signToken, verifyToken, decodeToken } = require("../utils/jwt");
 const { authMiddleware } = require("../middleware/auth");
 const { adminMiddleware, superAdminMiddleware } = require("../middleware/admin");
@@ -387,6 +388,65 @@ router.post("/validate-token", async (req, res, next) => {
     });
   } catch (err) {
     res.status(200).json({ valid: false, reason: "invalid_token" });
+  }
+});
+
+/**
+ * POST /auth/guest-check
+ * Anti-Tamper Hardware Machine Verification for 1-Hour Guest Session
+ */
+router.post("/guest-check", async (req, res, next) => {
+  try {
+    const { machineId, platform } = req.body;
+    if (!machineId || typeof machineId !== "string" || machineId.trim().length < 8) {
+      return res.status(400).json({
+        error: "invalid_machine_id",
+        message: "A valid hardware machineId string is required",
+      });
+    }
+
+    await connectToDatabase();
+
+    const cleanMachineId = machineId.trim();
+    let device = await GuestDevice.findOne({ machineId: cleanMachineId });
+
+    if (!device) {
+      // First time seeing this hardware device
+      const firstSeenAt = new Date();
+      const guestExpiresAt = new Date(firstSeenAt.getTime() + 60 * 60 * 1000); // 1-Hour Fixed Limit
+
+      device = await GuestDevice.create({
+        machineId: cleanMachineId,
+        firstSeenAt,
+        guestExpiresAt,
+        lastSeenAt: firstSeenAt,
+        ip: req.ip || req.headers["x-forwarded-for"] || null,
+        userAgent: req.headers["user-agent"] || null,
+        platform: platform || null,
+        checkCount: 1,
+      });
+    } else {
+      // Existing hardware device
+      device.lastSeenAt = new Date();
+      device.checkCount = (device.checkCount || 0) + 1;
+      if (platform && !device.platform) device.platform = platform;
+      await device.save();
+    }
+
+    const remainingSeconds = device.getRemainingSeconds();
+    const isExpired = device.isExpired();
+
+    res.status(200).json({
+      success: true,
+      machineId: device.machineId,
+      isExpired,
+      firstSeenAt: device.firstSeenAt,
+      guestExpiresAt: device.guestExpiresAt,
+      remainingSeconds,
+      remainingMinutes: Math.ceil(remainingSeconds / 60),
+    });
+  } catch (err) {
+    next(err);
   }
 });
 
