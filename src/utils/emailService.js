@@ -359,8 +359,85 @@ async function sendTicketStatusNotification(ticket, newStatus) {
   const text = `Ticket Status Update\n\nYour support ticket #${ticket.id || ticket._id} ("${ticket.subject}") has been updated to: ${statusLabel.toUpperCase()}.\n\nVisit ${env.FRONTEND_URL}/support for more details.\n\nCheers,\nThe OCS Team`;
 
   return module.exports.sendEmail({
-    to: ticket.email,
-    subject: `[OCS Support] Ticket Status Updated: ${ticket.subject}`,
+    to: [ticket.email],
+    subject: `Your OCS Ticket Has Been Updated [${statusLabel.toUpperCase()}]: ${ticket.subject}`,
+    html,
+    text,
+  });
+} catch (err) {
+  console.error('[sendTicketStatusNotification] Error sending status update email:', err);
+  return { error: err.message };
+}
+}
+
+/**
+ * Trigger 3: Send notification when a team member is tagged in an internal note.
+ * @param {Object} ticket
+ * @param {string} note
+ * @param {string[]} taggedMembers
+ * @param {string} authorName
+ */
+async function sendTicketTagNotification(ticket, note, taggedMembers, authorName) {
+  const recipients = env.NOTIFICATION_EMAILS.split(',')
+    .map((e) => e.trim())
+    .filter(Boolean);
+
+  try {
+    const User = require('../models/User');
+    const matchedUsers = await User.find({
+      $or: [
+        { name: { $in: taggedMembers } },
+        { email: { $in: taggedMembers.map((t) => String(t).toLowerCase()) } },
+      ],
+    }).select('email');
+
+    matchedUsers.forEach((u) => {
+      if (u.email && !recipients.includes(u.email)) {
+        recipients.push(u.email);
+      }
+    });
+  } catch (e) {}
+
+  if (recipients.length === 0) return { skipped: true, reason: 'no_recipients' };
+
+  const bodyHtml = `
+    <p style="font-size: 14px; color: #475569; margin-top: 0;">
+      <strong>${authorName}</strong> tagged you (<strong>${taggedMembers.map((m) => '@' + m).join(', ')}</strong>) in an internal note for support ticket <strong>#${ticket.id || ticket._id}</strong>.
+    </p>
+
+    <div style="background-color: #f5f3ff; border-left: 4px solid #7c3aed; padding: 14px; border-radius: 4px; margin: 16px 0;">
+      <h4 style="margin: 0 0 6px 0; color: #5b21b6; font-size: 13px; text-transform: uppercase;">Internal Team Note:</h4>
+      <p style="margin: 0; white-space: pre-wrap; font-size: 14px; color: #1e1b4b; line-height: 1.5;">${note}</p>
+    </div>
+
+    <table style="width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px;">
+      <tr>
+        <td style="padding: 6px 0; font-weight: bold; width: 120px; color: #475569;">Complaint Subject:</td>
+        <td style="padding: 6px 0; color: #0f172a;">${ticket.subject}</td>
+      </tr>
+      <tr>
+        <td style="padding: 6px 0; font-weight: bold; color: #475569;">Submitter:</td>
+        <td style="padding: 6px 0; color: #0f172a;">${ticket.email}</td>
+      </tr>
+      <tr>
+        <td style="padding: 6px 0; font-weight: bold; color: #475569;">Status:</td>
+        <td style="padding: 6px 0; color: #0f172a; text-transform: uppercase; font-weight: bold;">${ticket.status || 'OPEN'}</td>
+      </tr>
+    </table>
+  `;
+
+  const html = renderHtmlContainer({
+    heading: '🏷️ You have been tagged in a complaint',
+    bodyHtml,
+    ctaText: 'View Complaint & Notes',
+    ctaUrl: `${env.FRONTEND_URL}/admin/complaints`,
+  });
+
+  const text = `You have been tagged in a complaint!\n\n${authorName} tagged ${taggedMembers.map((m) => '@' + m).join(', ')} on ticket #${ticket.id || ticket._id} (${ticket.subject}):\n\n"${note}"\n\nView complaint at: ${env.FRONTEND_URL}/admin/complaints`;
+
+  return module.exports.sendEmail({
+    to: recipients,
+    subject: `[Tagged in Complaint] ${ticket.subject}`,
     html,
     text,
   });
@@ -666,6 +743,7 @@ module.exports = {
   sendEmail,
   sendTicketNotification,
   sendTicketStatusNotification,
+  sendTicketTagNotification,
   sendWelcomeEmail,
   sendPasswordResetEmail,
   sendSubscription10DaysReminderEmail,

@@ -5,7 +5,7 @@ const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth')
 const adminMiddleware = require('../middleware/admin');
 const { rateLimiter } = require('../middleware/rateLimiter');
 const { connectToDatabase } = require('../config/db');
-const { sendTicketNotification, sendTicketStatusNotification } = require('../utils/mailer');
+const { sendTicketNotification, sendTicketStatusNotification, sendTicketTagNotification } = require('../utils/mailer');
 const { emitAdminNotification } = require('../utils/socket');
 
 const router = express.Router();
@@ -112,7 +112,7 @@ router.get('/tickets', authMiddleware, async (req, res, next) => {
     const { status, priority, limit = 50, page = 1 } = req.query;
     const filter = {};
 
-    if (req.user.role !== 'admin') {
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
       filter.$or = [{ userId: req.user.id }, { email: req.user.email }];
     }
 
@@ -361,10 +361,43 @@ router.post(
         });
       }
 
+      const rawNote = String(note).trim();
       const ticketNote = await TicketNote.create({
         ticketId: id,
-        note: String(note).trim(),
+        note: rawNote,
       });
+
+      // Detect and notify tagged team members (@Name, @Team)
+      const tagMatches = rawNote.match(/@([A-Za-z0-9_.-]+)/g);
+      if (tagMatches && tagMatches.length > 0) {
+        const taggedList = [...new Set(tagMatches.map((t) => t.replace('@', '')))];
+        const authorName = req.user ? (req.user.name || req.user.email || 'A team member') : 'A team member';
+
+        // Emit real-time notification
+        emitAdminNotification({
+          id: `tag-${ticket._id || ticket.id}-${Date.now()}`,
+          type: 'complaint',
+          title: 'You have been tagged in a complaint',
+          summary: `${authorName} tagged ${tagMatches.join(', ')} on "${ticket.subject}": "${rawNote.slice(0, 100)}"`,
+          category: 'Support',
+          status: 'tagged',
+          badge: 'Tagged',
+          timestamp: new Date(),
+          targetUrl: '/admin/complaints',
+          isUnread: true,
+          metadata: {
+            ticketId: ticket._id || ticket.id,
+            tagged: taggedList,
+            author: authorName,
+            note: rawNote,
+          },
+        });
+
+        // Send email notification to tagged team
+        sendTicketTagNotification(ticket, rawNote, taggedList, authorName).catch((err) => {
+          console.error('[Ticket Tag Notification] Email delivery error:', err.message);
+        });
+      }
 
       res.status(201).json({
         success: true,
@@ -384,7 +417,38 @@ router.post('/tickets/:id/notes', authMiddleware, adminMiddleware, async (req, r
     if (!note || !String(note).trim()) return res.status(400).json({ error: 'missing_note', message: 'Note is required' });
     const ticket = await Ticket.findById(id);
     if (!ticket) return res.status(404).json({ error: 'not_found', message: 'Ticket not found' });
-    const ticketNote = await TicketNote.create({ ticketId: id, note: String(note).trim() });
+    const rawNote = String(note).trim();
+    const ticketNote = await TicketNote.create({ ticketId: id, note: rawNote });
+
+    const tagMatches = rawNote.match(/@([A-Za-z0-9_.-]+)/g);
+    if (tagMatches && tagMatches.length > 0) {
+      const taggedList = [...new Set(tagMatches.map((t) => t.replace('@', '')))];
+      const authorName = req.user ? (req.user.name || req.user.email || 'A team member') : 'A team member';
+
+      emitAdminNotification({
+        id: `tag-${ticket._id || ticket.id}-${Date.now()}`,
+        type: 'complaint',
+        title: 'You have been tagged in a complaint',
+        summary: `${authorName} tagged ${tagMatches.join(', ')} on "${ticket.subject}": "${rawNote.slice(0, 100)}"`,
+        category: 'Support',
+        status: 'tagged',
+        badge: 'Tagged',
+        timestamp: new Date(),
+        targetUrl: '/admin/complaints',
+        isUnread: true,
+        metadata: {
+          ticketId: ticket._id || ticket.id,
+          tagged: taggedList,
+          author: authorName,
+          note: rawNote,
+        },
+      });
+
+      sendTicketTagNotification(ticket, rawNote, taggedList, authorName).catch((err) => {
+        console.error('[Ticket Tag Notification] Email delivery error:', err.message);
+      });
+    }
+
     res.status(201).json({ success: true, message: 'Internal note added successfully', note: ticketNote });
   } catch (err) {
     next(err);
