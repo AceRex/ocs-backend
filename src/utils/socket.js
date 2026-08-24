@@ -26,6 +26,31 @@ function getIO() {
 }
 
 function emitAdminNotification(payload) {
+  if (payload && payload.id) {
+    try {
+      const AdminNotification = require('../models/AdminNotification');
+      AdminNotification.findOneAndUpdate(
+        { notificationId: String(payload.id) },
+        {
+          notificationId: String(payload.id),
+          type: payload.type || 'system',
+          title: payload.title || 'Notification',
+          summary: payload.summary || '',
+          category: payload.category || 'General',
+          status: payload.status || 'new',
+          badge: payload.badge || '',
+          timestamp: payload.timestamp || new Date(),
+          targetUrl: payload.targetUrl || '/admin/notifications',
+          isUnread: payload.isUnread !== undefined ? payload.isUnread : true,
+          metadata: payload.metadata || {},
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      ).catch((err) => {
+        // Silently catch persistence error if db is initializing
+      });
+    } catch (e) {}
+  }
+
   if (!io) return;
   try {
     io.emit('admin:notification', payload);

@@ -190,101 +190,170 @@ router.delete('/suggestions/:id', authMiddleware, adminMiddleware, async (req, r
   }
 });
 
+const AdminNotification = require('../models/AdminNotification');
+
 /**
  * GET /admin/notifications
  * Unified Live Monitoring & Notification Feed for Admin Panel:
  * Tracks new Suggestions, Testimonials, Support Tickets / Complaints, and Users.
+ * Fully supports read/unread persistence and category filtering.
  */
 router.get('/admin/notifications', authMiddleware, adminMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
+
+    const { type, isUnread, limit = 50 } = req.query;
 
     const [
       recentSuggestions,
       recentTickets,
       recentTestimonials,
       recentUsers,
-      unreadSuggestionsCount,
-      openTicketsCount,
     ] = await Promise.all([
-      Suggestion.find().sort({ createdAt: -1 }).limit(10).lean(),
-      Ticket.find().sort({ createdAt: -1 }).limit(10).lean(),
-      Testimonial.find().sort({ createdAt: -1 }).limit(10).lean(),
-      User.find().sort({ createdAt: -1 }).limit(10).select('name email churchName createdAt role').lean(),
+      Suggestion.find().sort({ createdAt: -1 }).limit(20).lean(),
+      Ticket.find().sort({ createdAt: -1 }).limit(20).lean(),
+      Testimonial.find().sort({ createdAt: -1 }).limit(20).lean(),
+      User.find().sort({ createdAt: -1 }).limit(20).select('name email churchName createdAt role').lean(),
+    ]);
+
+    // Backfill into AdminNotification collection if not already recorded
+    const syncOps = [];
+
+    for (const s of recentSuggestions) {
+      syncOps.push(
+        AdminNotification.updateOne(
+          { notificationId: `sug-${s._id}` },
+          {
+            $setOnInsert: {
+              notificationId: `sug-${s._id}`,
+              type: 'suggestion',
+              title: `New Feature Idea: "${s.title}"`,
+              summary: `${s.name} (${s.church || 'Ministry'}) proposed: ${s.description.slice(0, 100)}...`,
+              category: s.category || 'Feature Request',
+              status: s.status || 'new',
+              badge: s.impact === 'critical' ? 'Critical Impact' : 'Suggestion',
+              timestamp: s.createdAt,
+              targetUrl: '/admin/suggestions',
+              isUnread: !s.isReadByAdmin,
+              metadata: { suggestionId: s._id },
+            },
+          },
+          { upsert: true }
+        )
+      );
+    }
+
+    for (const t of recentTickets) {
+      syncOps.push(
+        AdminNotification.updateOne(
+          { notificationId: `ticket-${t._id}` },
+          {
+            $setOnInsert: {
+              notificationId: `ticket-${t._id}`,
+              type: 'complaint',
+              title: `Support Ticket: "${t.subject}"`,
+              summary: `From ${t.email} (${(t.priority || 'medium').toUpperCase()} Priority) — ${(t.message || '').slice(0, 100)}...`,
+              category: t.category || 'Support',
+              status: t.status || 'open',
+              badge: t.priority === 'high' ? 'High Priority' : 'Support Ticket',
+              timestamp: t.createdAt,
+              targetUrl: '/admin/complaints',
+              isUnread: t.status === 'open',
+              metadata: { ticketId: t._id },
+            },
+          },
+          { upsert: true }
+        )
+      );
+    }
+
+    for (const tm of recentTestimonials) {
+      syncOps.push(
+        AdminNotification.updateOne(
+          { notificationId: `testim-${tm._id}` },
+          {
+            $setOnInsert: {
+              notificationId: `testim-${tm._id}`,
+              type: 'testimonial',
+              title: `Church Testimonial: ${tm.author || tm.name || 'Pastor'}`,
+              summary: `${tm.church || 'Church'}: "${(tm.quote || tm.content || tm.message || '').slice(0, 100)}..."`,
+              category: 'Testimonials',
+              status: 'received',
+              badge: `${tm.stars || 5} Stars`,
+              timestamp: tm.createdAt,
+              targetUrl: '/admin/testimonials',
+              isUnread: true,
+              metadata: { testimonialId: tm._id },
+            },
+          },
+          { upsert: true }
+        )
+      );
+    }
+
+    for (const u of recentUsers) {
+      syncOps.push(
+        AdminNotification.updateOne(
+          { notificationId: `user-${u._id}` },
+          {
+            $setOnInsert: {
+              notificationId: `user-${u._id}`,
+              type: 'user',
+              title: `New Registration: ${u.churchName || u.name}`,
+              summary: `${u.name} (${u.email}) created an OCS account.`,
+              category: 'Registration',
+              status: u.role || 'church_admin',
+              badge: 'New User',
+              timestamp: u.createdAt,
+              targetUrl: '/admin/users',
+              isUnread: false,
+              metadata: { userId: u._id },
+            },
+          },
+          { upsert: true }
+        )
+      );
+    }
+
+    if (syncOps.length > 0) {
+      await Promise.allSettled(syncOps);
+    }
+
+    // Build filter for notifications query
+    const filter = { isArchived: { $ne: true } };
+    if (type && type !== 'all') {
+      filter.type = type;
+    }
+    if (isUnread === 'true') {
+      filter.isUnread = true;
+    } else if (isUnread === 'false') {
+      filter.isUnread = false;
+    }
+
+    const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+
+    const [notifications, totalUnread, unreadSuggestionsCount, openTicketsCount] = await Promise.all([
+      AdminNotification.find(filter)
+        .sort({ timestamp: -1, createdAt: -1 })
+        .limit(parsedLimit)
+        .lean(),
+      AdminNotification.countDocuments({ isArchived: { $ne: true }, isUnread: true }),
       Suggestion.countDocuments({ isReadByAdmin: false }),
       Ticket.countDocuments({ status: 'open' }),
     ]);
 
-    const feed = [];
-
-    // Suggestions
-    for (const s of recentSuggestions) {
-      feed.push({
-        id: `sug-${s._id}`,
-        type: 'suggestion',
-        title: `New Feature Idea: "${s.title}"`,
-        summary: `${s.name} (${s.church || 'Ministry'}) proposed: ${s.description.slice(0, 100)}...`,
-        category: s.category,
-        status: s.status,
-        badge: s.impact === 'critical' ? 'Critical Impact' : 'Suggestion',
-        timestamp: s.createdAt,
-        targetUrl: '/admin/suggestions',
-        isUnread: !s.isReadByAdmin,
-      });
-    }
-
-    // Complaints / Tickets
-    for (const t of recentTickets) {
-      feed.push({
-        id: `ticket-${t._id}`,
-        type: 'complaint',
-        title: `Support Ticket: "${t.subject}"`,
-        summary: `From ${t.email} (${t.priority.toUpperCase()} Priority) — ${t.message.slice(0, 100)}...`,
-        category: t.category || 'Support',
-        status: t.status,
-        badge: t.priority === 'high' ? 'High Priority' : 'Complaint / Support',
-        timestamp: t.createdAt,
-        targetUrl: '/admin/complaints',
-        isUnread: t.status === 'open',
-      });
-    }
-
-    // Testimonials
-    for (const tm of recentTestimonials) {
-      feed.push({
-        id: `testim-${tm._id}`,
-        type: 'testimonial',
-        title: `Church Testimonial: ${tm.author || tm.name || 'Pastor'}`,
-        summary: `${tm.church || 'Church'}: "${(tm.quote || tm.content || tm.message || '').slice(0, 100)}..."`,
-        category: 'Testimonials',
-        status: 'received',
-        badge: `${tm.stars || 5} Stars`,
-        timestamp: tm.createdAt,
-        targetUrl: '/admin/testimonials',
-        isUnread: true,
-      });
-    }
-
-    // New Users
-    for (const u of recentUsers) {
-      feed.push({
-        id: `user-${u._id}`,
-        type: 'user',
-        title: `New Registration: ${u.churchName || u.name}`,
-        summary: `${u.name} (${u.email}) created an OCS account.`,
-        category: 'Registration',
-        status: u.role || 'church_admin',
-        badge: 'New User',
-        timestamp: u.createdAt,
-        targetUrl: '/admin/users',
-        isUnread: false,
-      });
-    }
-
-    // Sort feed by timestamp descending
-    feed.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-    const totalUnread = unreadSuggestionsCount + openTicketsCount;
+    const feed = notifications.map((n) => ({
+      id: n.notificationId,
+      type: n.type,
+      title: n.title,
+      summary: n.summary,
+      category: n.category,
+      status: n.status,
+      badge: n.badge,
+      timestamp: n.timestamp || n.createdAt,
+      targetUrl: n.targetUrl,
+      isUnread: n.isUnread,
+    }));
 
     res.json({
       success: true,
@@ -294,8 +363,147 @@ router.get('/admin/notifications', authMiddleware, adminMiddleware, async (req, 
         openTickets: openTicketsCount,
         totalSuggestions: recentSuggestions.length,
         totalTickets: recentTickets.length,
+        totalNotifications: notifications.length,
       },
-      feed: feed.slice(0, 25),
+      feed,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * PATCH & POST /admin/notifications/:id/read
+ * Mark a single notification as read
+ */
+const markNotificationReadHandler = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+
+    const notif = await AdminNotification.findOneAndUpdate(
+      { notificationId: id },
+      { isUnread: false },
+      { new: true }
+    );
+
+    // If it's a suggestion, sync isReadByAdmin on Suggestion
+    if (id.startsWith('sug-')) {
+      const sugId = id.replace('sug-', '');
+      await Suggestion.findByIdAndUpdate(sugId, { isReadByAdmin: true }).catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: 'Notification marked as read',
+      notification: notif,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+router.patch('/admin/notifications/:id/read', authMiddleware, adminMiddleware, markNotificationReadHandler);
+router.post('/admin/notifications/:id/read', authMiddleware, adminMiddleware, markNotificationReadHandler);
+
+/**
+ * PATCH & POST /admin/notifications/:id/unread
+ * Mark a single notification as unread
+ */
+const markNotificationUnreadHandler = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+
+    const notif = await AdminNotification.findOneAndUpdate(
+      { notificationId: id },
+      { isUnread: true },
+      { new: true }
+    );
+
+    if (id.startsWith('sug-')) {
+      const sugId = id.replace('sug-', '');
+      await Suggestion.findByIdAndUpdate(sugId, { isReadByAdmin: false }).catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: 'Notification marked as unread',
+      notification: notif,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+router.patch('/admin/notifications/:id/unread', authMiddleware, adminMiddleware, markNotificationUnreadHandler);
+router.post('/admin/notifications/:id/unread', authMiddleware, adminMiddleware, markNotificationUnreadHandler);
+
+/**
+ * PATCH & POST /admin/notifications/mark-all-read
+ * Mark all notifications as read
+ */
+const markAllNotificationsReadHandler = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+
+    await Promise.all([
+      AdminNotification.updateMany({ isArchived: { $ne: true } }, { isUnread: false }),
+      Suggestion.updateMany({}, { isReadByAdmin: true }),
+    ]);
+
+    res.json({
+      success: true,
+      message: 'All notifications marked as read',
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+router.patch('/admin/notifications/mark-all-read', authMiddleware, adminMiddleware, markAllNotificationsReadHandler);
+router.post('/admin/notifications/mark-all-read', authMiddleware, adminMiddleware, markAllNotificationsReadHandler);
+
+/**
+ * DELETE /admin/notifications/:id
+ * Delete or archive a single notification
+ */
+router.delete('/admin/notifications/:id', authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+
+    await AdminNotification.findOneAndUpdate(
+      { notificationId: id },
+      { isArchived: true, isUnread: false }
+    );
+
+    res.json({
+      success: true,
+      message: 'Notification archived successfully',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * DELETE /admin/notifications/clear-read
+ * Clear all read notifications
+ */
+router.delete('/admin/notifications/clear-read', authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+
+    const result = await AdminNotification.updateMany(
+      { isUnread: false },
+      { isArchived: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'All read notifications cleared',
+      count: result.modifiedCount,
     });
   } catch (err) {
     next(err);
