@@ -490,28 +490,54 @@ router.get('/admin/notifications', authMiddleware, adminMiddleware, async (req, 
       Ticket.countDocuments({ status: 'open' }),
     ]);
 
-    const feed = notifications.map((n) => ({
-      id: n.notificationId,
-      type: n.type,
-      title: n.title,
-      summary: n.summary,
-      category: n.category,
-      status: n.status,
-      badge: n.badge,
-      timestamp: n.timestamp || n.createdAt,
-      targetUrl: n.targetUrl,
-      isUnread: n.isUnread,
-    }));
+    const userEmail = (req.user?.email || '').toLowerCase();
+    const userName = (req.user?.name || '').toLowerCase().replace(/\s+/g, '');
+    const userHandle = userEmail.split('@')[0];
+
+    const feed = notifications
+      .filter((n) => {
+        if (n.status === 'tagged' && n.metadata) {
+          const authorEmail = (n.metadata.authorEmail || n.metadata.author || '').toLowerCase();
+          const taggedList = (n.metadata.tagged || []).map((t) => String(t).toLowerCase());
+
+          // If the requesting user is the author who created the tag note, do NOT send them this notification
+          if (authorEmail && userEmail && authorEmail === userEmail) {
+            return false;
+          }
+
+          // If the requesting user is NOT one of the tagged users, do NOT send them this notification
+          const isMeTagged = taggedList.some((t) => t === userEmail || t === userName || t === userHandle);
+          if (!isMeTagged) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .map((n) => ({
+        id: n.notificationId,
+        type: n.type,
+        title: n.title,
+        summary: n.summary,
+        category: n.category,
+        status: n.status,
+        badge: n.badge,
+        timestamp: n.timestamp || n.createdAt,
+        targetUrl: n.targetUrl,
+        isUnread: n.isUnread,
+        metadata: n.metadata || {},
+      }));
+
+    const userUnreadCount = feed.filter((n) => n.isUnread).length;
 
     res.json({
       success: true,
       counts: {
-        totalUnread,
+        totalUnread: userUnreadCount,
         unreadSuggestions: unreadSuggestionsCount,
         openTickets: openTicketsCount,
         totalSuggestions: recentSuggestions.length,
         totalTickets: recentTickets.length,
-        totalNotifications: notifications.length,
+        totalNotifications: feed.length,
       },
       feed,
     });
