@@ -1,6 +1,7 @@
 const app = require('./app');
 const env = require('./config/env');
 const { connectToDatabase } = require('./config/db');
+const { initSocket } = require('./utils/socket');
 
 async function startServer() {
   try {
@@ -11,6 +12,8 @@ async function startServer() {
     const server = app.listen(env.PORT, () => {
       console.log(`OCS Backend Server running on http://localhost:${env.PORT} [${env.NODE_ENV}]`);
     });
+
+    initSocket(server);
 
     // Graceful shutdown handling
     const shutdown = async () => {

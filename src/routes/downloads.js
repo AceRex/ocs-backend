@@ -4,6 +4,7 @@ const { resolveCountry } = require('../utils/geoip');
 const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth');
 const adminMiddleware = require('../middleware/admin');
 const { connectToDatabase } = require('../config/db');
+const { emitAdminNotification, emitAdminMetrics } = require('../utils/socket');
 
 const router = express.Router();
 
@@ -46,6 +47,21 @@ router.post('/downloads', optionalAuthMiddleware, async (req, res, next) => {
       ipCountry,
       referrer: referrer ? String(referrer).trim() : null,
     });
+
+    emitAdminNotification({
+      id: `dl-${download.id}`,
+      type: 'download',
+      title: `App Download: ${platform.toUpperCase()} (v${appVersion})`,
+      summary: `${email || churchName || 'A user'} downloaded OCS for ${platform.toUpperCase()}${ipCountry ? ` from ${ipCountry}` : ''}.`,
+      category: 'Downloads',
+      status: 'completed',
+      badge: platform.toUpperCase(),
+      timestamp: download.createdAt,
+      targetUrl: '/admin/downloads',
+      isUnread: true,
+    });
+
+    emitAdminMetrics({ type: 'download:created', platform: platform.toLowerCase() });
 
     res.status(201).json({
       success: true,

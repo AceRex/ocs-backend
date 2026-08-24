@@ -7,6 +7,7 @@ const { authMiddleware, optionalAuthMiddleware } = require('../middleware/auth')
 const adminMiddleware = require('../middleware/admin');
 const { rateLimiter } = require('../middleware/rateLimiter');
 const { connectToDatabase } = require('../config/db');
+const { emitAdminNotification } = require('../utils/socket');
 
 const router = express.Router();
 
@@ -51,6 +52,19 @@ router.post('/suggestions', suggestionSubmitLimiter, optionalAuthMiddleware, asy
       description: description.trim(),
       status: 'under_review',
       isReadByAdmin: false,
+    });
+
+    emitAdminNotification({
+      id: `sug-${suggestion._id}`,
+      type: 'suggestion',
+      title: `New Feature Idea: "${suggestion.title}"`,
+      summary: `${suggestion.name} (${suggestion.church || 'Ministry'}) proposed: ${suggestion.description.slice(0, 100)}...`,
+      category: suggestion.category,
+      status: suggestion.status,
+      badge: suggestion.impact === 'critical' ? 'Critical Impact' : 'Suggestion',
+      timestamp: suggestion.createdAt,
+      targetUrl: '/admin/suggestions',
+      isUnread: true,
     });
 
     res.status(201).json({

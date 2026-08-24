@@ -6,6 +6,7 @@ const adminMiddleware = require('../middleware/admin');
 const { rateLimiter } = require('../middleware/rateLimiter');
 const { connectToDatabase } = require('../config/db');
 const { sendTicketNotification, sendTicketStatusNotification } = require('../utils/mailer');
+const { emitAdminNotification } = require('../utils/socket');
 
 const router = express.Router();
 
@@ -61,9 +62,23 @@ router.post(
         priority: validPriority,
       });
 
-      // Dispatch real-time email notification to admins (johnsonare0722@gmail.com, waveiosoftware@gmail.com)
+      // Dispatch real-time email notification to admins
       sendTicketNotification(ticket).catch((err) => {
         console.error('[Ticket Notification] Failed to send email:', err);
+      });
+
+      // Dispatch real-time WebSocket notification to Admin panel
+      emitAdminNotification({
+        id: `ticket-${ticket.id}`,
+        type: 'complaint',
+        title: `Support Ticket: "${ticket.subject}"`,
+        summary: `From ${ticket.email} (${ticket.priority.toUpperCase()} Priority) — ${ticket.message.slice(0, 100)}...`,
+        category: 'Support',
+        status: ticket.status,
+        badge: ticket.priority === 'high' ? 'High Priority' : 'Complaint / Support',
+        timestamp: ticket.createdAt,
+        targetUrl: '/admin/complaints',
+        isUnread: true,
       });
 
       res.status(201).json({
