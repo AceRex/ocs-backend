@@ -408,11 +408,11 @@ router.post("/validate-token", async (req, res, next) => {
     }
 
     // Auto-update active desktop device tracking on token verification
-    const valPlatform = req.body?.platform || req.headers["x-ocs-platform"];
+    const valPlatform = req.body?.platform || req.headers["x-ocs-platform"] || (req.headers["user-agent"]?.includes("Electron") ? "desktop" : undefined);
     const valDeviceId = req.body?.deviceId || req.body?.machineId || req.headers["x-ocs-device-id"];
     const valDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"] || "Sanctuary Desktop Station";
 
-    if (valPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || (valDeviceId && valPlatform !== "mobile")) {
+    if (valPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || valDeviceId || req.headers["user-agent"]?.includes("Electron")) {
       const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
       quotas.activeDesktops = quotas.activeDesktops || [];
       const cleanId = valDeviceId || `desk-${user._id.toString().slice(-4)}`;

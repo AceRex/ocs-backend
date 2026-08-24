@@ -308,6 +308,27 @@ router.patch(
     }
   }
 );
+router.patch('/tickets/:id', authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+    const { status, priority } = req.body;
+    const updates = {};
+    if (status && ['open', 'in_progress', 'resolved'].includes(status)) updates.status = status;
+    if (priority && ['low', 'normal', 'high'].includes(priority)) updates.priority = priority;
+
+    const oldTicket = await Ticket.findById(id);
+    if (!oldTicket) return res.status(404).json({ error: 'not_found', message: 'Ticket not found' });
+
+    const ticket = await Ticket.findByIdAndUpdate(id, updates, { new: true, runValidators: true });
+    if (status && status !== oldTicket.status && ticket.email) {
+      sendTicketStatusNotification(ticket, status).catch(() => {});
+    }
+    res.json({ success: true, message: 'Ticket updated successfully', ticket });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * POST /admin/tickets/:id/notes
@@ -355,5 +376,19 @@ router.post(
     }
   }
 );
+router.post('/tickets/:id/notes', authMiddleware, adminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { id } = req.params;
+    const { note } = req.body;
+    if (!note || !String(note).trim()) return res.status(400).json({ error: 'missing_note', message: 'Note is required' });
+    const ticket = await Ticket.findById(id);
+    if (!ticket) return res.status(404).json({ error: 'not_found', message: 'Ticket not found' });
+    const ticketNote = await TicketNote.create({ ticketId: id, note: String(note).trim() });
+    res.status(201).json({ success: true, message: 'Internal note added successfully', note: ticketNote });
+  } catch (err) {
+    next(err);
+  }
+});
 
 module.exports = router;
