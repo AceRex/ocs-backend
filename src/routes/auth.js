@@ -832,11 +832,9 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
     if (tier === "free") {
       user.subscriptionExpiresAt = null;
     } else {
-      const durationDays = billingCycle === "annually" ? 365 : 30;
-      const baseDate = user.subscriptionExpiresAt && new Date(user.subscriptionExpiresAt) > new Date()
-        ? new Date(user.subscriptionExpiresAt)
-        : new Date();
-      user.subscriptionExpiresAt = new Date(baseDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+      const durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 30);
+      const activationDate = new Date();
+      user.subscriptionExpiresAt = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
     }
 
     // Update license quotas for selected tier
@@ -864,20 +862,18 @@ router.post("/profile/subscription/pay", authMiddleware, async (req, res, next) 
   try {
     await connectToDatabase();
     const userId = req.user.id || req.user._id;
-    const { tier = "standard", billingCycle = "monthly", paymentMethod = "card", transactionReference } = req.body;
+    const { tier = "standard", billingCycle = "semi-annual", paymentMethod = "card", transactionReference } = req.body;
 
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ error: "user_not_found", message: "User not found" });
     }
 
-    const durationDays = billingCycle === "annually" ? 365 : 30;
-    const baseDate = user.subscriptionExpiresAt && new Date(user.subscriptionExpiresAt) > new Date()
-      ? new Date(user.subscriptionExpiresAt)
-      : new Date();
+    const durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 30);
+    const activationDate = new Date();
 
     user.subscriptionTier = tier;
-    user.subscriptionExpiresAt = new Date(baseDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    user.subscriptionExpiresAt = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
 
     const quotas = User.PLAN_QUOTAS?.[tier] || { maxDesktops: 1, maxMobileUsers: 3 };
     user.licenseQuotas.maxDesktops = quotas.maxDesktops;
@@ -922,6 +918,7 @@ const handleGetAdminUsers = async (req, res, next) => {
         id: u.id || u._id.toString(),
         name: u.name || u.email.split("@")[0],
         email: u.email,
+        avatarUrl: u.avatarUrl || "",
         church: u.churchName,
         role: "super_admin",
         licenseQuotas: u.licenseQuotas || { maxDesktops: 99, maxMobileUsers: 99, activeDesktops: [], activeMobileUsers: [] },
@@ -999,6 +996,7 @@ router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => 
           id: u.id || u._id.toString(),
           name: u.name || u.email.split("@")[0],
           email: u.email,
+          avatarUrl: u.avatarUrl || "",
           church: u.churchName,
           customerType: u.customerType || "church",
           channelLink: u.channelLink || "",
