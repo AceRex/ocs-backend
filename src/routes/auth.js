@@ -265,12 +265,12 @@ router.post("/register/admin", authMiddleware, superAdminMiddleware, handleAdmin
 router.post("/admin/register", authMiddleware, superAdminMiddleware, handleAdminRegister);
 
 /**
- * POST /auth/login
+ * POST /auth/login, POST /auth/admin/login
  */
-router.post("/login", async (req, res, next) => {
+const handleLogin = async (req, res, next) => {
   try {
     await connectToDatabase();
-    const { email, password } = req.body;
+    const { email, password, adminOnly } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({
@@ -348,6 +348,16 @@ router.post("/login", async (req, res, next) => {
       });
     }
 
+    // Strictly forbid customer accounts from logging in through admin routes/flags
+    const isAdminEndpoint = req.path.includes("/admin") || req.baseUrl.includes("/admin") || adminOnly === true;
+    if (isAdminEndpoint && user.role !== "admin" && user.role !== "super_admin") {
+      loginAttemptTracker.recordFailure(req);
+      return res.status(403).json({
+        error: "forbidden",
+        message: "Access denied. Customer accounts are not authorized to log into the Admin Console.",
+      });
+    }
+
     loginAttemptTracker.reset(req);
 
     // Auto-register active device if platform is desktop or mobile
@@ -387,7 +397,11 @@ router.post("/login", async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
+};
+
+router.post("/login", handleLogin);
+router.post("/admin/login", handleLogin);
+router.post("/login/admin", handleLogin);
 
 /**
  * POST /auth/validate-token

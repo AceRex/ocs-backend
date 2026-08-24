@@ -292,4 +292,41 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.error).toBe("invalid_machine_id");
     });
   });
+
+  describe("Admin Login Access Control (/api/auth/admin/login)", () => {
+    it("rejects customer accounts from logging in to admin console with 403 forbidden", async () => {
+      await request(app).post("/api/auth/signup").send(testUser);
+
+      const res = await request(app)
+        .post("/api/auth/admin/login")
+        .send({ email: testUser.email, password: testUser.password })
+        .expect(403);
+
+      expect(res.body.error).toBe("forbidden");
+      expect(res.body.message).toContain("Customer accounts are not authorized");
+    });
+
+    it("rejects customer accounts when adminOnly flag is true on /api/auth/login", async () => {
+      await request(app).post("/api/auth/signup").send(testUser);
+
+      const res = await request(app)
+        .post("/api/auth/login")
+        .send({ email: testUser.email, password: testUser.password, adminOnly: true })
+        .expect(403);
+
+      expect(res.body.error).toBe("forbidden");
+      expect(res.body.message).toContain("Customer accounts are not authorized");
+    });
+
+    it("allows super_admin / master admin to log in to admin console successfully", async () => {
+      const res = await request(app)
+        .post("/api/auth/admin/login")
+        .send({ email: "waveio@ocs.app", password: "Waveio123!@" })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.user.role).toBe("super_admin");
+      expect(res.body.token).toBeDefined();
+    });
+  });
 });
