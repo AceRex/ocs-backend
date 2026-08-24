@@ -122,9 +122,8 @@ const handleGeneralRegister = async (req, res, next) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const assignedRole = role === "user" ? "user" : "church_admin";
-    const graceExpiresAt = User.computeGraceExpiry(3);
-
     const trialEndsAt = User.computeTrialExpiry ? User.computeTrialExpiry(2) : User.computeGraceExpiry(2);
+    const graceExpiresAt = trialEndsAt;
     const user = await User.create({
       name: name?.trim() || cleanEmail.split("@")[0],
       email: cleanEmail,
@@ -335,6 +334,33 @@ router.post("/login", async (req, res, next) => {
     }
 
     loginAttemptTracker.reset(req);
+
+    // Auto-register active device if platform is desktop or mobile
+    const clientPlatform = req.body?.platform || req.headers["x-ocs-platform"];
+    const clientDeviceId = req.body?.deviceId || req.body?.machineId || req.headers["x-ocs-device-id"];
+    const clientDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"] || "Sanctuary Desktop Station";
+
+    if (clientPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || (clientDeviceId && clientPlatform !== "mobile")) {
+      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
+      quotas.activeDesktops = quotas.activeDesktops || [];
+      const cleanId = clientDeviceId || `desk-${user._id.toString().slice(-4)}`;
+      const existing = quotas.activeDesktops.find(d => d.deviceId === cleanId);
+      if (!existing) {
+        quotas.activeDesktops.push({
+          deviceId: cleanId,
+          name: clientDeviceName,
+          platform: "desktop",
+          registeredAt: new Date(),
+          lastActiveAt: new Date(),
+        });
+      } else {
+        existing.lastActiveAt = new Date();
+      }
+      user.licenseQuotas = quotas;
+      user.markModified("licenseQuotas");
+      await user.save();
+    }
+
     const { token } = signToken(user);
 
     res.json({
@@ -379,6 +405,32 @@ router.post("/validate-token", async (req, res, next) => {
     const user = await User.findById(decoded.userId);
     if (!user) {
       return res.status(200).json({ valid: false, reason: "user_not_found" });
+    }
+
+    // Auto-update active desktop device tracking on token verification
+    const valPlatform = req.body?.platform || req.headers["x-ocs-platform"];
+    const valDeviceId = req.body?.deviceId || req.body?.machineId || req.headers["x-ocs-device-id"];
+    const valDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"] || "Sanctuary Desktop Station";
+
+    if (valPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || (valDeviceId && valPlatform !== "mobile")) {
+      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
+      quotas.activeDesktops = quotas.activeDesktops || [];
+      const cleanId = valDeviceId || `desk-${user._id.toString().slice(-4)}`;
+      const existing = quotas.activeDesktops.find(d => d.deviceId === cleanId);
+      if (!existing) {
+        quotas.activeDesktops.push({
+          deviceId: cleanId,
+          name: valDeviceName,
+          platform: "desktop",
+          registeredAt: new Date(),
+          lastActiveAt: new Date(),
+        });
+      } else {
+        existing.lastActiveAt = new Date();
+      }
+      user.licenseQuotas = quotas;
+      user.markModified("licenseQuotas");
+      await user.save();
     }
 
     res.status(200).json({
@@ -580,7 +632,7 @@ router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => 
           passwordHash: defaultPasswordHash,
           churchName: "Redeemed Christian Church",
           role: "church_admin",
-          graceExpiresAt: User.computeGraceExpiry(3),
+          graceExpiresAt: User.computeGraceExpiry(2),
           licenseQuotas: {
             maxDesktops: 2,
             maxMobileUsers: 5,
@@ -594,7 +646,7 @@ router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => 
           passwordHash: defaultPasswordHash,
           churchName: "Grace Community Church",
           role: "church_admin",
-          graceExpiresAt: User.computeGraceExpiry(3),
+          graceExpiresAt: User.computeGraceExpiry(2),
           licenseQuotas: {
             maxDesktops: 2,
             maxMobileUsers: 5,
@@ -609,20 +661,36 @@ router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => 
     res.json({
       success: true,
       count: users.length,
-      users: users.map(u => ({
-        id: u.id || u._id.toString(),
-        name: u.name || u.email.split("@")[0],
-        email: u.email,
-        church: u.churchName,
-        customerType: u.customerType || "church",
-        channelLink: u.channelLink || "",
-        podcastLink: u.podcastLink || "",
-        role: u.role || "church_admin",
-        licenseQuotas: u.licenseQuotas || { maxDesktops: 2, maxMobileUsers: 5, activeDesktops: [], activeMobileUsers: [] },
-        graceExpiresAt: u.graceExpiresAt,
-        joined: u.createdAt ? new Date(u.createdAt).toISOString().split("T")[0] : "2026-08-22",
-        lastLogin: "Active",
-      })),
+      users: users.map(u => {
+        const entitlements = typeof u.getEntitlements === "function" ? u.getEntitlements() : null;
+        const tier = entitlements ? entitlements.tier : (u.subscriptionTier || "trial");
+        const remainingDays = typeof u.getTrialRemainingDays === "function" ? u.getTrialRemainingDays() : 60;
+
+        return {
+          id: u.id || u._id.toString(),
+          name: u.name || u.email.split("@")[0],
+          email: u.email,
+          church: u.churchName,
+          customerType: u.customerType || "church",
+          channelLink: u.channelLink || "",
+          podcastLink: u.podcastLink || "",
+          role: u.role || "church_admin",
+          subscriptionTier: tier,
+          effectiveTier: tier,
+          isTrial: tier === "trial",
+          trialRemainingDays: Math.min(60, Math.max(0, remainingDays)),
+          trialEndsAt: u.trialEndsAt || u.graceExpiresAt,
+          licenseQuotas: u.licenseQuotas || {
+            maxDesktops: entitlements?.limits?.maxDesktops || 1,
+            maxMobileUsers: entitlements?.limits?.maxMobileUsers || 3,
+            activeDesktops: u.licenseQuotas?.activeDesktops || [],
+            activeMobileUsers: u.licenseQuotas?.activeMobileUsers || [],
+          },
+          graceExpiresAt: u.graceExpiresAt,
+          joined: u.createdAt ? new Date(u.createdAt).toISOString().split("T")[0] : "2026-08-22",
+          lastLogin: "Active",
+        };
+      }),
     });
   } catch (err) {
     next(err);
@@ -779,34 +847,22 @@ router.get("/license", authMiddleware, async (req, res, next) => {
   }
 });
 
-/**
- * POST /auth/device/register
- */
-router.post("/device/register", authMiddleware, async (req, res, next) => {
+const handleDeviceRegister = async (req, res, next) => {
   try {
-    const { platform, deviceId, name } = req.body;
-
-    if (!platform || !deviceId) {
-      return res.status(400).json({
-        error: "missing_device_info",
-        message: "Platform (desktop/mobile) and deviceId are required",
-      });
-    }
-
+    const { platform = "desktop", deviceId, name } = req.body;
+    const cleanPlatform = platform || "desktop";
     const user = req.user;
-    const quotas = user.licenseQuotas || { maxDesktops: 2, maxMobileUsers: 5, activeDesktops: [], activeMobileUsers: [] };
+    const cleanDeviceId = deviceId || `${cleanPlatform}-${user._id.toString().slice(-4)}`;
 
-    if (platform === "desktop") {
-      const exists = quotas.activeDesktops.find(d => d.deviceId === deviceId);
+    const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
+    quotas.activeDesktops = quotas.activeDesktops || [];
+    quotas.activeMobileUsers = quotas.activeMobileUsers || [];
+
+    if (cleanPlatform === "desktop") {
+      const exists = quotas.activeDesktops.find(d => d.deviceId === cleanDeviceId);
       if (!exists) {
-        if (quotas.activeDesktops.length >= (quotas.maxDesktops || 2)) {
-          return res.status(403).json({
-            error: "desktop_quota_exceeded",
-            message: "Desktop device limit reached (Maximum 2 desktop apps per church license). Please unbind a previous station.",
-          });
-        }
         quotas.activeDesktops.push({
-          deviceId,
+          deviceId: cleanDeviceId,
           name: name || "Sanctuary Display Station",
           platform: "desktop",
           registeredAt: new Date(),
@@ -815,17 +871,11 @@ router.post("/device/register", authMiddleware, async (req, res, next) => {
       } else {
         exists.lastActiveAt = new Date();
       }
-    } else if (platform === "mobile") {
-      const exists = quotas.activeMobileUsers.find(m => m.deviceId === deviceId);
+    } else if (cleanPlatform === "mobile") {
+      const exists = quotas.activeMobileUsers.find(m => m.deviceId === cleanDeviceId);
       if (!exists) {
-        if (quotas.activeMobileUsers.length >= (quotas.maxMobileUsers || 5)) {
-          return res.status(403).json({
-            error: "mobile_quota_exceeded",
-            message: "Mobile companion limit reached (Maximum 5 mobile users per church license).",
-          });
-        }
         quotas.activeMobileUsers.push({
-          deviceId,
+          deviceId: cleanDeviceId,
           name: name || "Worship Stage Device",
           platform: "mobile",
           registeredAt: new Date(),
@@ -837,6 +887,7 @@ router.post("/device/register", authMiddleware, async (req, res, next) => {
     }
 
     user.licenseQuotas = quotas;
+    user.markModified("licenseQuotas");
     await user.save();
 
     res.json({
@@ -847,7 +898,11 @@ router.post("/device/register", authMiddleware, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
+};
+
+router.post("/device/register", authMiddleware, handleDeviceRegister);
+router.post("/device-activate", authMiddleware, handleDeviceRegister);
+router.post("/register-device", authMiddleware, handleDeviceRegister);
 
 /**
  * Rate limiter for forgot-password endpoint (max 5 requests per 15 minutes per IP)
