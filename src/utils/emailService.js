@@ -319,55 +319,56 @@ async function sendTicketNotification(ticket) {
 async function sendTicketStatusNotification(ticket, newStatus) {
   if (!ticket.email) return { skipped: true, reason: 'no_ticket_email' };
 
-  const statusLabel = {
-    open: 'Open',
-    in_progress: 'In Progress',
-    resolved: 'Resolved',
-  }[newStatus] || newStatus;
+  try {
+    const statusLabel = {
+      open: 'Open',
+      in_progress: 'In Progress',
+      resolved: 'Resolved',
+    }[newStatus] || newStatus;
 
-  const statusColor = newStatus === 'resolved' ? '#16a34a' : newStatus === 'in_progress' ? '#eab308' : '#2563eb';
+    const statusColor = newStatus === 'resolved' ? '#16a34a' : newStatus === 'in_progress' ? '#eab308' : '#2563eb';
 
-  const bodyHtml = `
-    <p style="font-size: 14px; color: #475569;">Hello,</p>
-    <p style="font-size: 14px; color: #475569;">Your support ticket <strong>#${ticket.id || ticket._id}</strong> has been updated.</p>
-    
-    <div style="background-color: #f8fafc; padding: 16px; border-radius: 6px; margin: 16px 0; border: 1px solid #e2e8f0;">
-      <p style="margin: 0 0 8px 0; font-size: 14px; color: #334155;"><strong>Subject:</strong> ${ticket.subject}</p>
-      <p style="margin: 0; font-size: 14px; color: #334155;">
-        <strong>Current Status:</strong>
-        <span style="display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: #ffffff; background-color: ${statusColor};">
-          ${statusLabel.toUpperCase()}
-        </span>
+    const bodyHtml = `
+      <p style="font-size: 14px; color: #475569;">Hello,</p>
+      <p style="font-size: 14px; color: #475569;">Your support ticket <strong>#${ticket.id || ticket._id}</strong> has been updated.</p>
+      
+      <div style="background-color: #f8fafc; padding: 16px; border-radius: 6px; margin: 16px 0; border: 1px solid #e2e8f0;">
+        <p style="margin: 0 0 8px 0; font-size: 14px; color: #334155;"><strong>Subject:</strong> ${ticket.subject}</p>
+        <p style="margin: 0; font-size: 14px; color: #334155;">
+          <strong>Current Status:</strong>
+          <span style="display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; color: #ffffff; background-color: ${statusColor};">
+            ${statusLabel.toUpperCase()}
+          </span>
+        </p>
+      </div>
+
+      <p style="font-size: 14px; color: #475569; line-height: 1.5;">
+        ${newStatus === 'resolved' 
+          ? 'Our team has marked this ticket as resolved. If you have any further questions or need additional assistance, please reply to this email or submit a new ticket.' 
+          : 'Our support team is actively reviewing your request. We will keep you updated as we make progress.'}
       </p>
-    </div>
+    `;
 
-    <p style="font-size: 14px; color: #475569; line-height: 1.5;">
-      ${newStatus === 'resolved' 
-        ? 'Our team has marked this ticket as resolved. If you have any further questions or need additional assistance, please reply to this email or submit a new ticket.' 
-        : 'Our support team is actively reviewing your request. We will keep you updated as we make progress.'}
-    </p>
-  `;
+    const html = renderHtmlContainer({
+      heading: 'Ticket Status Update',
+      bodyHtml,
+      ctaText: 'Visit OCS Support',
+      ctaUrl: `${env.FRONTEND_URL}/support`,
+      signoffHtml: 'Cheers,<br><strong>The OCS Team</strong>',
+    });
 
-  const html = renderHtmlContainer({
-    heading: 'Ticket Status Update',
-    bodyHtml,
-    ctaText: 'Visit OCS Support',
-    ctaUrl: `${env.FRONTEND_URL}/support`,
-    signoffHtml: 'Cheers,<br><strong>The OCS Team</strong>',
-  });
+    const text = `Ticket Status Update\n\nYour support ticket #${ticket.id || ticket._id} ("${ticket.subject}") has been updated to: ${statusLabel.toUpperCase()}.\n\nVisit ${env.FRONTEND_URL}/support for more details.\n\nCheers,\nThe OCS Team`;
 
-  const text = `Ticket Status Update\n\nYour support ticket #${ticket.id || ticket._id} ("${ticket.subject}") has been updated to: ${statusLabel.toUpperCase()}.\n\nVisit ${env.FRONTEND_URL}/support for more details.\n\nCheers,\nThe OCS Team`;
-
-  return module.exports.sendEmail({
-    to: [ticket.email],
-    subject: `Your OCS Ticket Has Been Updated [${statusLabel.toUpperCase()}]: ${ticket.subject}`,
-    html,
-    text,
-  });
-} catch (err) {
-  console.error('[sendTicketStatusNotification] Error sending status update email:', err);
-  return { error: err.message };
-}
+    return module.exports.sendEmail({
+      to: [ticket.email],
+      subject: `Your OCS Ticket Has Been Updated [${statusLabel.toUpperCase()}]: ${ticket.subject}`,
+      html,
+      text,
+    });
+  } catch (err) {
+    console.error('[sendTicketStatusNotification] Error sending status update email:', err);
+    return { error: err.message };
+  }
 }
 
 /**
