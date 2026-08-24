@@ -87,11 +87,21 @@ router.get(
     try {
       await connectToDatabase();
 
-      const { platform, startDate, endDate, limit = 50, page = 1 } = req.query;
+      const { platform, startDate, endDate, search, limit = 50, page = 1 } = req.query;
 
       const filter = {};
-      if (platform) {
+      if (platform && platform.toLowerCase() !== 'all') {
         filter.platform = platform.toLowerCase();
+      }
+
+      if (search && String(search).trim()) {
+        const regex = new RegExp(String(search).trim(), 'i');
+        filter.$or = [
+          { email: regex },
+          { churchName: regex },
+          { appVersion: regex },
+          { ipCountry: regex },
+        ];
       }
 
       if (startDate || endDate) {
@@ -104,7 +114,7 @@ router.get(
         }
       }
 
-      const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+      const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 500);
       const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
       const skip = (parsedPage - 1) * parsedLimit;
 
@@ -130,22 +140,46 @@ router.get(
         ios: 0,
       };
       platformCounts.forEach((p) => {
-        byPlatform[p._id] = p.count;
+        if (p._id) {
+          byPlatform[p._id.toLowerCase()] = p.count;
+        }
       });
 
-      // Aggregate counts by day (last 30 days or filtered range)
-      const dailyTimeline = await Download.aggregate([
+      // Aggregate counts by day and platform for the chart
+      const timelineAgg = await Download.aggregate([
         { $match: filter },
         {
           $group: {
             _id: {
-              $dateToString: { format: '%Y-%m-%d', date: '$createdAt' },
+              date: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+              platform: '$platform',
             },
             count: { $sum: 1 },
           },
         },
-        { $sort: { _id: 1 } },
+        { $sort: { '_id.date': 1 } },
       ]);
+
+      const timelineMap = {};
+      timelineAgg.forEach((item) => {
+        const d = item._id.date;
+        const p = (item._id.platform || 'macos').toLowerCase();
+        if (!timelineMap[d]) {
+          timelineMap[d] = {
+            date: d,
+            month: d.slice(5),
+            macos: 0,
+            windows: 0,
+            android: 0,
+            ios: 0,
+            total: 0,
+          };
+        }
+        timelineMap[d][p] = (timelineMap[d][p] || 0) + item.count;
+        timelineMap[d].total += item.count;
+      });
+
+      const dailyTimeline = Object.values(timelineMap);
 
       res.json({
         total,
@@ -153,10 +187,7 @@ router.get(
         limit: parsedLimit,
         totalPages: Math.ceil(total / parsedLimit),
         byPlatform,
-        dailyTimeline: dailyTimeline.map((item) => ({
-          date: item._id,
-          count: item.count,
-        })),
+        dailyTimeline,
         downloads,
       });
     } catch (err) {
