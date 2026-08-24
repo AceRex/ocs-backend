@@ -378,14 +378,13 @@ async function sendTicketStatusNotification(ticket, newStatus) {
  * @param {string[]} taggedMembers
  * @param {string} authorName
  */
-async function sendTicketTagNotification(ticket, note, taggedMembers, authorName) {
-  const recipients = env.NOTIFICATION_EMAILS.split(',')
-    .map((e) => e.trim())
-    .filter(Boolean);
+async function sendTicketTagNotification(ticket, note, taggedMembers, authorName, authorEmail = '') {
+  const recipients = [];
 
   try {
     const User = require('../models/User');
     const matchedUsers = await User.find({
+      role: { $in: ['admin', 'super_admin'] },
       $or: [
         { name: { $in: taggedMembers } },
         { email: { $in: taggedMembers.map((t) => String(t).toLowerCase()) } },
@@ -393,13 +392,18 @@ async function sendTicketTagNotification(ticket, note, taggedMembers, authorName
     }).select('email');
 
     matchedUsers.forEach((u) => {
-      if (u.email && !recipients.includes(u.email)) {
-        recipients.push(u.email);
+      if (u.email && !recipients.includes(u.email.toLowerCase())) {
+        recipients.push(u.email.toLowerCase());
       }
     });
   } catch (e) {}
 
-  if (recipients.length === 0) return { skipped: true, reason: 'no_recipients' };
+  // Exclude the author who wrote the note
+  const filteredRecipients = recipients.filter(
+    (e) => e !== String(authorEmail).toLowerCase()
+  );
+
+  if (filteredRecipients.length === 0) return { skipped: true, reason: 'no_tagged_recipients' };
 
   const bodyHtml = `
     <p style="font-size: 14px; color: #475569; margin-top: 0;">
@@ -437,7 +441,7 @@ async function sendTicketTagNotification(ticket, note, taggedMembers, authorName
   const text = `You have been tagged in a complaint!\n\n${authorName} tagged ${taggedMembers.map((m) => '@' + m).join(', ')} on ticket #${ticket.id || ticket._id} (${ticket.subject}):\n\n"${note}"\n\nView complaint at: ${env.FRONTEND_URL}/admin/complaints`;
 
   return module.exports.sendEmail({
-    to: recipients,
+    to: filteredRecipients,
     subject: `[Tagged in Complaint] ${ticket.subject}`,
     html,
     text,

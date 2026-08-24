@@ -136,12 +136,28 @@ router.get('/tickets', authMiddleware, async (req, res, next) => {
       Ticket.countDocuments(filter),
     ]);
 
+    // Attach internal notes for each ticket
+    const ticketIds = tickets.map((t) => t._id);
+    const allNotes = await TicketNote.find({ ticketId: { $in: ticketIds } }).sort({ createdAt: 1 });
+    const notesByTicketId = {};
+    allNotes.forEach((n) => {
+      const tid = String(n.ticketId);
+      if (!notesByTicketId[tid]) notesByTicketId[tid] = [];
+      notesByTicketId[tid].push(n.note);
+    });
+
+    const ticketsWithNotes = tickets.map((t) => {
+      const obj = t.toJSON ? t.toJSON() : t.toObject();
+      obj.notes = notesByTicketId[String(t._id)] || [];
+      return obj;
+    });
+
     res.json({
       total,
       page: parsedPage,
       limit: parsedLimit,
       totalPages: Math.ceil(total / parsedLimit),
-      tickets,
+      tickets: ticketsWithNotes,
     });
   } catch (err) {
     next(err);
@@ -184,6 +200,22 @@ router.get(
         Ticket.countDocuments(filter),
       ]);
 
+      // Attach internal notes for each ticket
+      const ticketIds = tickets.map((t) => t._id);
+      const allNotes = await TicketNote.find({ ticketId: { $in: ticketIds } }).sort({ createdAt: 1 });
+      const notesByTicketId = {};
+      allNotes.forEach((n) => {
+        const tid = String(n.ticketId);
+        if (!notesByTicketId[tid]) notesByTicketId[tid] = [];
+        notesByTicketId[tid].push(n.note);
+      });
+
+      const ticketsWithNotes = tickets.map((t) => {
+        const obj = t.toJSON ? t.toJSON() : t.toObject();
+        obj.notes = notesByTicketId[String(t._id)] || [];
+        return obj;
+      });
+
       const counts = await Ticket.aggregate([
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]);
@@ -199,7 +231,7 @@ router.get(
         limit: parsedLimit,
         totalPages: Math.ceil(total / parsedLimit),
         byStatus,
-        tickets,
+        tickets: ticketsWithNotes,
       });
     } catch (err) {
       next(err);
@@ -372,6 +404,7 @@ router.post(
       if (tagMatches && tagMatches.length > 0) {
         const taggedList = [...new Set(tagMatches.map((t) => t.replace('@', '')))];
         const authorName = req.user ? (req.user.name || req.user.email || 'A team member') : 'A team member';
+        const authorEmail = req.user ? (req.user.email || '') : '';
 
         // Emit real-time notification
         emitAdminNotification({
@@ -389,12 +422,13 @@ router.post(
             ticketId: ticket._id || ticket.id,
             tagged: taggedList,
             author: authorName,
+            authorEmail: authorEmail,
             note: rawNote,
           },
         });
 
-        // Send email notification to tagged team
-        sendTicketTagNotification(ticket, rawNote, taggedList, authorName).catch((err) => {
+        // Send email notification strictly to tagged users (excluding author)
+        sendTicketTagNotification(ticket, rawNote, taggedList, authorName, authorEmail).catch((err) => {
           console.error('[Ticket Tag Notification] Email delivery error:', err.message);
         });
       }
@@ -424,6 +458,7 @@ router.post('/tickets/:id/notes', authMiddleware, adminMiddleware, async (req, r
     if (tagMatches && tagMatches.length > 0) {
       const taggedList = [...new Set(tagMatches.map((t) => t.replace('@', '')))];
       const authorName = req.user ? (req.user.name || req.user.email || 'A team member') : 'A team member';
+      const authorEmail = req.user ? (req.user.email || '') : '';
 
       emitAdminNotification({
         id: `tag-${ticket._id || ticket.id}-${Date.now()}`,
@@ -440,11 +475,12 @@ router.post('/tickets/:id/notes', authMiddleware, adminMiddleware, async (req, r
           ticketId: ticket._id || ticket.id,
           tagged: taggedList,
           author: authorName,
+          authorEmail: authorEmail,
           note: rawNote,
         },
       });
 
-      sendTicketTagNotification(ticket, rawNote, taggedList, authorName).catch((err) => {
+      sendTicketTagNotification(ticket, rawNote, taggedList, authorName, authorEmail).catch((err) => {
         console.error('[Ticket Tag Notification] Email delivery error:', err.message);
       });
     }
