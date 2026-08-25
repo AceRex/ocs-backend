@@ -384,6 +384,26 @@ const handleLogin = async (req, res, next) => {
       user.licenseQuotas = quotas;
       user.markModified("licenseQuotas");
       await user.save();
+    } else if (clientPlatform === "mobile" || req.headers["x-ocs-platform"] === "mobile") {
+      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
+      quotas.activeMobileUsers = quotas.activeMobileUsers || [];
+      const cleanMobId = clientDeviceId || `mob-${user._id.toString().slice(-4)}-${Date.now().toString(36).slice(-4)}`;
+      const cleanMobName = clientDeviceName && clientDeviceName !== "Sanctuary Desktop Station" ? clientDeviceName : "Mobile Companion";
+      const existingMob = quotas.activeMobileUsers.find(m => m.deviceId === cleanMobId);
+      if (!existingMob) {
+        quotas.activeMobileUsers.push({
+          deviceId: cleanMobId,
+          name: cleanMobName,
+          platform: "mobile",
+          registeredAt: new Date(),
+          lastActiveAt: new Date(),
+        });
+      } else {
+        existingMob.lastActiveAt = new Date();
+      }
+      user.licenseQuotas = quotas;
+      user.markModified("licenseQuotas");
+      await user.save();
     }
 
     const { token } = signToken(user);
@@ -441,7 +461,7 @@ router.post("/validate-token", async (req, res, next) => {
     const valDeviceId = req.body?.deviceId || req.body?.machineId || req.headers["x-ocs-device-id"];
     const valDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"] || "Sanctuary Desktop Station";
 
-    if (valPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || valDeviceId || req.headers["user-agent"]?.includes("Electron")) {
+    if (valPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || (valDeviceId && valPlatform !== "mobile") || req.headers["user-agent"]?.includes("Electron")) {
       const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
       quotas.activeDesktops = quotas.activeDesktops || [];
       const cleanId = valDeviceId || `desk-${user._id.toString().slice(-4)}`;
@@ -456,6 +476,26 @@ router.post("/validate-token", async (req, res, next) => {
         });
       } else {
         existing.lastActiveAt = new Date();
+      }
+      user.licenseQuotas = quotas;
+      user.markModified("licenseQuotas");
+      await user.save();
+    } else if (valPlatform === "mobile" || req.headers["x-ocs-platform"] === "mobile") {
+      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
+      quotas.activeMobileUsers = quotas.activeMobileUsers || [];
+      const cleanMobId = valDeviceId || `mob-${user._id.toString().slice(-4)}-${Date.now().toString(36).slice(-4)}`;
+      const cleanMobName = valDeviceName && valDeviceName !== "Sanctuary Desktop Station" ? valDeviceName : "Mobile Companion";
+      const existingMob = quotas.activeMobileUsers.find(m => m.deviceId === cleanMobId);
+      if (!existingMob) {
+        quotas.activeMobileUsers.push({
+          deviceId: cleanMobId,
+          name: cleanMobName,
+          platform: "mobile",
+          registeredAt: new Date(),
+          lastActiveAt: new Date(),
+        });
+      } else {
+        existingMob.lastActiveAt = new Date();
       }
       user.licenseQuotas = quotas;
       user.markModified("licenseQuotas");
