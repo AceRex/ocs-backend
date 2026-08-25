@@ -2,7 +2,7 @@ const env = require("../config/env");
 
 /**
  * Universal CORS middleware for OCS Web & Netlify Functions.
- * Allows waveiosoftware.netlify.app, preview deploys, local development, and desktop apps.
+ * Allows ocs-web-three.vercel.app, preview deploys, local development, and desktop apps.
  */
 function corsMiddleware(req, res, next) {
   const origin = req.headers.origin;

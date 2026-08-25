@@ -23,7 +23,7 @@ const env = {
     return parseInt(process.env.GRACE_PERIOD_MONTHS || "3", 10);
   },
   get FRONTEND_URL() {
-    return process.env.FRONTEND_URL || "https://waveiosoftware.netlify.app";
+    return process.env.FRONTEND_URL || "https://ocs-web-three.vercel.app";
   },
   get NOTIFICATION_EMAILS() {
     return (
