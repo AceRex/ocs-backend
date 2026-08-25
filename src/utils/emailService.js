@@ -360,8 +360,8 @@ async function sendTicketStatusNotification(ticket, newStatus) {
     const text = `Ticket Status Update\n\nYour support ticket #${ticket.id || ticket._id} ("${ticket.subject}") has been updated to: ${statusLabel.toUpperCase()}.\n\nVisit ${env.FRONTEND_URL}/support for more details.\n\nCheers,\nThe OCS Team`;
 
     return module.exports.sendEmail({
-      to: [ticket.email],
-      subject: `Your OCS Ticket Has Been Updated [${statusLabel.toUpperCase()}]: ${ticket.subject}`,
+      to: ticket.email,
+      subject: `[Ticket Status Updated] ${statusLabel.toUpperCase()}: ${ticket.subject}`,
       html,
       text,
     });
