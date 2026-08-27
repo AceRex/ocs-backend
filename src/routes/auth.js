@@ -916,13 +916,15 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
     const previousPlan = user.subscriptionTier || "trial";
     user.subscriptionTier = tier;
 
-    let durationDays = 30;
+    // Duration rules: trial=2mo (60d), free=1mo (30d), all paid plans=6mo (180d) by default
+    let durationDays = 180; // default for paid plans: 6 months
     if (tier === "free") {
+      durationDays = 30; // 1 month
       user.subscriptionExpiresAt = null;
-      user.trialEndsAt = new Date();
-      user.graceExpiresAt = new Date();
+      user.trialEndsAt = new Date(new Date().getTime() + durationDays * 24 * 60 * 60 * 1000);
+      user.graceExpiresAt = user.trialEndsAt;
     } else if (tier === "trial") {
-      durationDays = 60;
+      durationDays = 60; // 2 months
       const activationDate = new Date();
       const newExpiry = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
       user.trialStartedAt = activationDate;
@@ -930,7 +932,8 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
       user.graceExpiresAt = newExpiry;
       user.subscriptionExpiresAt = null;
     } else {
-      durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 30);
+      // mini, standard, large, premium → 6 months by default; respect explicit billingCycle if provided
+      durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 180);
       const activationDate = new Date();
       const newExpiry = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
       user.subscriptionStartedAt = activationDate;
@@ -1529,7 +1532,17 @@ router.put("/users/:id/tier", authMiddleware, superAdminMiddleware, async (req, 
     }
 
     const now = new Date();
-    const months = Number(extendMonths) > 0 ? Number(extendMonths) : (normalizedNewTier === "trial" ? 2 : 1);
+    // Duration rules: trial=2mo, free=1mo, all paid plans (mini/standard/large/premium)=6mo by default
+    let months;
+    if (Number(extendMonths) > 0) {
+      months = Number(extendMonths);
+    } else if (normalizedNewTier === "trial") {
+      months = 2;
+    } else if (normalizedNewTier === "free") {
+      months = 1;
+    } else {
+      months = 6; // mini, standard, large, premium → 6 months (180 days)
+    }
     const newExpiry = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
 
     if (["mini", "standard", "large", "premium"].includes(normalizedNewTier)) {

@@ -294,7 +294,20 @@ const updateUserTierHandler = async (req, res, next) => {
     }
 
     const now = new Date();
-    const months = Number(extendMonths) > 0 ? Number(extendMonths) : (normalizedNewTier === "trial" ? 2 : 1);
+    // Duration rules: trial=2mo, free=1mo, all paid plans (mini/standard/large/premium)=6mo by default
+    const DEFAULT_PAID_MONTHS = 6;
+    const DEFAULT_TRIAL_MONTHS = 2;
+    const DEFAULT_FREE_MONTHS = 1;
+    let months;
+    if (Number(extendMonths) > 0) {
+      months = Number(extendMonths);
+    } else if (normalizedNewTier === "trial") {
+      months = DEFAULT_TRIAL_MONTHS;
+    } else if (normalizedNewTier === "free") {
+      months = DEFAULT_FREE_MONTHS;
+    } else {
+      months = DEFAULT_PAID_MONTHS; // mini, standard, large, premium → 6 months
+    }
     const newExpiry = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
 
     if (["mini", "standard", "large", "premium"].includes(normalizedNewTier)) {

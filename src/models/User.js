@@ -311,6 +311,7 @@ userSchema.methods.getEffectiveTier = function () {
   if (this.role === "super_admin" || this.role === "admin") {
     return "premium";
   }
+  // Check active paid subscription
   if (
     this.subscriptionTier &&
     ["mini", "standard", "large", "premium"].includes(this.subscriptionTier)
@@ -318,11 +319,19 @@ userSchema.methods.getEffectiveTier = function () {
     if (!this.subscriptionExpiresAt || new Date(this.subscriptionExpiresAt) > new Date()) {
       return this.subscriptionTier;
     }
+    // Paid subscription expired → downgrade to free
+    return "free";
   }
-  const trialEnd = this.trialEndsAt || this.graceExpiresAt;
-  if (trialEnd && new Date() <= new Date(trialEnd)) {
-    return "trial";
+  // Check active trial
+  if (this.subscriptionTier === "trial") {
+    const trialEnd = this.trialEndsAt || this.graceExpiresAt;
+    if (trialEnd && new Date() <= new Date(trialEnd)) {
+      return "trial";
+    }
+    // Trial expired → free
+    return "free";
   }
+  // free or anything else
   return "free";
 };
 
