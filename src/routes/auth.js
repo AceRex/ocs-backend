@@ -59,10 +59,11 @@ function formatUserResponse(user) {
     isTrial: entitlements.isTrial,
     isTrialExpired: entitlements.isTrialExpired,
     trialStartedAt: entitlements.trialStartedAt,
+    subscriptionStartedAt: entitlements.subscriptionStartedAt || user.subscriptionStartedAt || null,
     trialEndsAt: entitlements.trialEndsAt,
     trialRemainingDays: entitlements.trialRemainingDays,
     daysRemaining: entitlements.daysRemaining ?? entitlements.trialRemainingDays,
-    subscriptionExpiresAt: user.subscriptionExpiresAt || null,
+    subscriptionExpiresAt: entitlements.subscriptionExpiresAt || user.subscriptionExpiresAt || null,
     features: entitlements.features,
     licenseQuotas: {
       maxDesktops: entitlements.limits?.maxDesktops || 1,
@@ -1159,7 +1160,12 @@ router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => 
       users: users.map(u => {
         const entitlements = typeof u.getEntitlements === "function" ? u.getEntitlements() : null;
         const tier = entitlements ? entitlements.tier : (u.subscriptionTier || "trial");
-        const remainingDays = typeof u.getTrialRemainingDays === "function" ? u.getTrialRemainingDays() : 60;
+        // Use getRemainingDays() — correctly handles paid 180-day plans without capping
+        const remainingDays = typeof u.getRemainingDays === "function"
+          ? u.getRemainingDays()
+          : (typeof u.getTrialRemainingDays === "function" ? u.getTrialRemainingDays() : 60);
+
+        const isPaidTier = ["mini", "standard", "large", "premium"].includes(tier);
 
         return {
           id: u.id || u._id.toString(),
@@ -1174,11 +1180,18 @@ router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => 
           subscriptionTier: tier,
           effectiveTier: tier,
           isTrial: tier === "trial",
-          trialRemainingDays: Math.min(60, Math.max(0, remainingDays)),
+          // daysRemaining not capped — reflects true plan duration (e.g. ~180 days for paid plans)
+          daysRemaining: remainingDays,
+          trialRemainingDays: remainingDays,
           trialEndsAt: u.trialEndsAt || u.graceExpiresAt,
-          licenseQuotas: u.licenseQuotas || {
-            maxDesktops: entitlements?.limits?.maxDesktops || 1,
-            maxMobileUsers: entitlements?.limits?.maxMobileUsers || 3,
+          subscriptionExpiresAt: u.subscriptionExpiresAt || null,
+          // subscriptionStartedAt for paid plans, trialStartedAt for trial
+          subscriptionStartedAt: isPaidTier
+            ? (u.subscriptionStartedAt || null)
+            : (u.trialStartedAt || u.createdAt || null),
+          licenseQuotas: {
+            maxDesktops: entitlements?.limits?.maxDesktops || u.licenseQuotas?.maxDesktops || 1,
+            maxMobileUsers: entitlements?.limits?.maxMobileUsers || u.licenseQuotas?.maxMobileUsers || 3,
             activeDesktops: u.licenseQuotas?.activeDesktops || [],
             activeMobileUsers: u.licenseQuotas?.activeMobileUsers || [],
           },

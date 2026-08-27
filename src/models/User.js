@@ -212,6 +212,10 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    subscriptionStartedAt: {
+      type: Date,
+      default: null,
+    },
     // Desktop & Mobile quotas & active device tracking
     licenseQuotas: {
       maxDesktops: {
@@ -338,21 +342,24 @@ userSchema.methods.getEffectiveTier = function () {
 userSchema.methods.getRemainingDays = function () {
   const tier = typeof this.getEffectiveTier === "function" ? this.getEffectiveTier() : this.subscriptionTier;
   if (tier === "free") return 0;
+
+  // Admins and premium with no expiry are unlimited
   if ((this.role === "super_admin" || this.role === "admin" || tier === "premium") && !this.subscriptionExpiresAt) {
     return 999;
   }
 
-  // If on a paid plan (mini, standard, large, premium) and subscriptionExpiresAt is defined
+  // Paid plans: always use subscriptionExpiresAt
   if (this.subscriptionExpiresAt && ["mini", "standard", "large", "premium"].includes(this.subscriptionTier)) {
     const diffMs = new Date(this.subscriptionExpiresAt).getTime() - Date.now();
     if (diffMs <= 0) return 0;
     return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
   }
 
+  // Trial: use trialEndsAt / graceExpiresAt, normalized to standard 60-day trial
   const trialStart = this.trialStartedAt || this.createdAt || new Date();
   let trialEnd = this.trialEndsAt || this.graceExpiresAt;
+  if (!trialEnd) return 0;
 
-  // Normalize legacy records if trialEnd was initialized via setMonth(+2) resulting in >60 days
   if (trialStart && trialEnd) {
     const totalTrialDays = (new Date(trialEnd).getTime() - new Date(trialStart).getTime()) / (1000 * 60 * 60 * 24);
     if (totalTrialDays > 60) {
@@ -360,12 +367,9 @@ userSchema.methods.getRemainingDays = function () {
     }
   }
 
-  if (!trialEnd) return 0;
   const diffMs = new Date(trialEnd).getTime() - Date.now();
   if (diffMs <= 0) return 0;
-
-  const remaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-  return Math.min(60, Math.max(0, remaining));
+  return Math.min(60, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
 };
 
 userSchema.methods.getTrialRemainingDays = function () {
@@ -374,6 +378,7 @@ userSchema.methods.getTrialRemainingDays = function () {
 
 userSchema.methods.getEntitlements = function () {
   const tier = this.getEffectiveTier();
+  const isPaidTier = ["mini", "standard", "large", "premium"].includes(tier);
   const trialEnd = this.trialEndsAt || this.graceExpiresAt || new Date();
   const remainingDays = this.getRemainingDays();
   const isTrial = tier === "trial";
@@ -381,15 +386,21 @@ userSchema.methods.getEntitlements = function () {
   const features = PLAN_FEATURES[tier] || PLAN_FEATURES.free;
   const quotas = PLAN_QUOTAS[tier] || PLAN_QUOTAS.free;
 
+  // subscriptionStartedAt for paid plans, trialStartedAt for trial
+  const startedAt = isPaidTier
+    ? (this.subscriptionStartedAt || this.createdAt || new Date())
+    : (this.trialStartedAt || this.createdAt || new Date());
+
   return {
     tier,
     isTrial,
     isTrialExpired,
-    trialStartedAt: this.trialStartedAt || this.createdAt || new Date(),
+    trialStartedAt: startedAt,
+    subscriptionStartedAt: this.subscriptionStartedAt || null,
     trialEndsAt: trialEnd,
+    subscriptionExpiresAt: this.subscriptionExpiresAt || null,
     trialRemainingDays: remainingDays,
     daysRemaining: remainingDays,
-    subscriptionExpiresAt: this.subscriptionExpiresAt,
     features,
     limits: quotas,
   };
