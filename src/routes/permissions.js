@@ -1,6 +1,8 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const PlanPermission = require("../models/PlanPermission");
 const User = require("../models/User");
+const SubscriptionHistory = require("../models/SubscriptionHistory");
 const { connectToDatabase } = require("../config/db");
 
 const { authMiddleware } = require("../middleware/auth");
@@ -14,20 +16,23 @@ const INITIAL_PERMISSIONS = [
   { key: "timer.start_time", name: "Scheduled Start Timer", category: "timer", description: "Schedule custom countdown start times tied to service schedule", enabledTiers: ["large", "premium"], isSystem: true },
   { key: "timer.interval", name: "Interval & Multi-Segment Timers", category: "timer", description: "Configurable interval loops and sermon segment warnings", enabledTiers: ["standard", "large", "premium"], isSystem: true },
   { key: "timer.change_view", name: "Custom Timer View & Skins", category: "timer", description: "Customizable timer layouts, high-contrast skins, and stage views", enabledTiers: ["standard", "large", "premium"], isSystem: true },
+  { key: "session.recording", name: "Automated Session & Sermon Recording", category: "sessions", description: "Automatic synchronized MP4 and audio recording with timer", enabledTiers: ["standard", "large", "premium"], isSystem: true },
+  { key: "session.bumper", name: "Video Bumpers & Transitions", category: "sessions", description: "Pre-service and post-service bumper video clips and intros", enabledTiers: ["standard", "large", "premium"], isSystem: true },
   { key: "presentation.intro", name: "Service Intro Video Bumpers", category: "presentation", description: "Automated pre-service video bumpers and welcome loops", enabledTiers: ["large", "premium"], isSystem: true },
   { key: "presentation.outro", name: "Service Outro & Benediction Wraps", category: "presentation", description: "Automated service conclusion video wraps and announcements", enabledTiers: ["large", "premium"], isSystem: true },
 
   // Documents & Presentation
-  { key: "presentation.basic", name: "General Presentation Engine", category: "presentation", description: "Multi-slide presentation player with quick-cue controls", enabledTiers: ["trial", "mini", "standard", "large", "premium"], isSystem: true },
-  { key: "pdf.view", name: "PDF Viewer & Sermon Notes", category: "documents", description: "Render and advance PDF documents on sanctuary screens", enabledTiers: ["trial", "mini", "standard", "large", "premium"], isSystem: true },
-  { key: "pdf.edit", name: "PDF In-App Editor & Annotator", category: "documents", description: "Real-time PDF page reordering, cropping, and text callouts", enabledTiers: ["standard", "large", "premium"], isSystem: true },
+  { key: "presentation.basic", name: "General Presentation Engine", category: "presentation", description: "Multi-slide presentation player with quick-cue controls", enabledTiers: ["trial", "free", "mini", "standard", "large", "premium"], isSystem: true },
+  { key: "presentation.multi_pptx", name: "Unlimited PowerPoint PPTX Decks", category: "presentation", description: "Import and manage multiple PPTX decks concurrently", enabledTiers: ["large", "premium"], isSystem: true },
+  { key: "pdf.view", name: "PDF Viewer & Sermon Notes", category: "documents", description: "Render and advance PDF documents on sanctuary screens", enabledTiers: ["trial", "free", "mini", "standard", "large", "premium"], isSystem: true },
+  { key: "pdf.edit", name: "PDF In-App Editor & Annotator", category: "documents", description: "Real-time PDF page reordering, cropping, and text callouts", enabledTiers: ["large", "premium"], isSystem: true },
   { key: "slides.use", name: "Custom Slide Designer", category: "presentation", description: "Full slide creation tool with background media and scripture inserts", enabledTiers: ["standard", "large", "premium"], isSystem: true },
-  { key: "scene.basic", name: "Standard Scene Management", category: "presentation", description: "Save and recall stage layouts and sanctuary projection scenes", enabledTiers: ["trial", "mini", "standard", "large", "premium"], isSystem: true },
+  { key: "scene.basic", name: "Standard Scene Management", category: "presentation", description: "Save and recall stage layouts and sanctuary projection scenes", enabledTiers: ["trial", "free", "mini", "standard", "large", "premium"], isSystem: true },
   { key: "scene.animations", name: "Dynamic Scene Animations", category: "presentation", description: "Keyframed lower-third and lyric slide element animations", enabledTiers: ["large", "premium"], isSystem: true },
   { key: "scene.transitions", name: "Cinematic Transitions (Cut, Dissolve, Wipe)", category: "presentation", description: "Broadcast-grade hardware-accelerated video transitions", enabledTiers: ["large", "premium"], isSystem: true },
 
   // Worship & Lyrics
-  { key: "song.basic", name: "Hymn & Song Lyrics Projection", category: "worship", description: "Searchable chord & lyric projection library with live verse jumping", enabledTiers: ["trial", "mini", "standard", "large", "premium"], isSystem: true },
+  { key: "song.basic", name: "Hymn & Song Lyrics Projection", category: "worship", description: "Searchable chord & lyric projection library with live verse jumping", enabledTiers: ["trial", "free", "mini", "standard", "large", "premium"], isSystem: true },
   { key: "song.chorus_flow", name: "Interactive Chorus Flow Loop", category: "worship", description: "Dynamic spontaneous chorus/bridge looping and stage cue triggers", enabledTiers: ["large", "premium"], isSystem: true },
   { key: "song.repeat", name: "Custom Song Section Repeat", category: "worship", description: "One-click verse and chorus repeat triggers for worship leaders", enabledTiers: ["large", "premium"], isSystem: true },
   { key: "sing_along", name: "Karaoke-Style Sing Along Guide", category: "worship", description: "Synchronized syllable and lyric bouncing ball guide", enabledTiers: ["large", "premium"], isSystem: true },
@@ -204,6 +209,48 @@ router.delete("/:key", authMiddleware, superAdminMiddleware, async (req, res, ne
 });
 
 /**
+ * GET /api/permissions/history & /api/admin/subscription-history
+ * Fetch transaction & plan upgrade history logs
+ */
+router.get("/history", authMiddleware, superAdminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { page = 1, limit = 50, search = "", plan = "" } = req.query;
+
+    const query = {};
+    if (search) {
+      const searchRegex = new RegExp(search.trim(), "i");
+      query.$or = [
+        { userName: searchRegex },
+        { userEmail: searchRegex },
+        { churchName: searchRegex },
+        { transactionReference: searchRegex },
+      ];
+    }
+    if (plan && plan !== "all") {
+      query.$or = [{ previousPlan: plan }, { newPlan: plan }];
+    }
+
+    const total = await SubscriptionHistory.countDocuments(query);
+    const history = await SubscriptionHistory.find(query)
+      .sort({ upgradedAt: -1, createdAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit));
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      totalPages: Math.ceil(total / Number(limit)),
+      history,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * PUT /api/permissions/user/:id/tier
  * Update a specific customer user's subscription tier and quotas
  */
@@ -211,9 +258,16 @@ const updateUserTierHandler = async (req, res, next) => {
   try {
     await connectToDatabase();
     const { id } = req.params;
-    const { subscriptionTier, extendMonths = 0 } = req.body;
+    const {
+      subscriptionTier,
+      extendMonths = 0,
+      reason,
+      billingCycle,
+      paymentMethod,
+      transactionReference,
+    } = req.body;
 
-    const validTiers = ["trial", "free", "mini", "standard", "large", "premium"];
+    const validTiers = ["trial", "free", "mini", "standard", "large", "premium", "mini_setup", "standard_setup", "large_setup", "premium_setup"];
     if (subscriptionTier && !validTiers.includes(subscriptionTier)) {
       return res.status(400).json({ error: "invalid_tier", message: "Invalid subscription tier" });
     }
@@ -232,21 +286,72 @@ const updateUserTierHandler = async (req, res, next) => {
       return res.status(404).json({ error: "not_found", message: `User "${id}" not found` });
     }
 
+    const previousPlan = user.subscriptionTier || "trial";
+    const normalizedNewTier = subscriptionTier ? subscriptionTier.replace(/_setup$/, "") : previousPlan;
+
     if (subscriptionTier) {
-      user.subscriptionTier = subscriptionTier;
+      user.subscriptionTier = normalizedNewTier;
     }
 
-    if (extendMonths > 0) {
-      const now = new Date();
-      const newExpiry = new Date(now.setMonth(now.getMonth() + Number(extendMonths)));
-      user.graceExpiresAt = newExpiry;
+    const now = new Date();
+    const months = Number(extendMonths) > 0 ? Number(extendMonths) : (normalizedNewTier === "trial" ? 2 : 1);
+    const newExpiry = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+
+    if (["mini", "standard", "large", "premium"].includes(normalizedNewTier)) {
+      user.subscriptionStartedAt = now;
       user.subscriptionExpiresAt = newExpiry;
-      if (subscriptionTier === "trial") {
-        user.trialEndsAt = newExpiry;
-      }
+      user.graceExpiresAt = newExpiry;
+    } else if (normalizedNewTier === "trial") {
+      user.trialStartedAt = now;
+      user.trialEndsAt = newExpiry;
+      user.graceExpiresAt = newExpiry;
+      user.subscriptionExpiresAt = null;
+    } else if (normalizedNewTier === "free") {
+      user.subscriptionExpiresAt = null;
+      user.trialEndsAt = now;
+      user.graceExpiresAt = now;
     }
+
+    // Update license quotas
+    const quotas = User.PLAN_QUOTAS?.[normalizedNewTier] || User.PLAN_QUOTAS?.free || { maxDesktops: 1, maxMobileUsers: 3 };
+    if (!user.licenseQuotas) {
+      user.licenseQuotas = { activeDesktops: [], activeMobileUsers: [] };
+    }
+    user.licenseQuotas.maxDesktops = quotas.maxDesktops;
+    user.licenseQuotas.maxMobileUsers = quotas.maxMobileUsers;
 
     await user.save();
+
+    const remainingDays = typeof user.getRemainingDays === "function" ? user.getRemainingDays() : (typeof user.getTrialRemainingDays === "function" ? user.getTrialRemainingDays() : 30);
+
+    // Record transaction in SubscriptionHistory
+    try {
+      await SubscriptionHistory.create({
+        userId: user._id,
+        userName: user.name || "",
+        userEmail: user.email,
+        churchName: user.churchName || "",
+        previousPlan,
+        newPlan: user.subscriptionTier,
+        upgradedAt: now,
+        durationMonths: months,
+        daysRemaining: remainingDays,
+        newExpiryDate: user.subscriptionExpiresAt || user.trialEndsAt || user.graceExpiresAt,
+        changedBy: req.user ? {
+          id: req.user.id || req.user._id,
+          name: req.user.name || "Admin",
+          email: req.user.email || "",
+          role: req.user.role || "admin",
+        } : { role: "system" },
+        action: req.user?.role === "super_admin" || req.user?.role === "admin" ? "admin_tier_change" : "user_upgrade",
+        reason: reason || `Tier changed from ${previousPlan.toUpperCase()} to ${user.subscriptionTier.toUpperCase()}`,
+        billingCycle: billingCycle || (months >= 12 ? "annually" : months >= 6 ? "semi-annual" : "monthly"),
+        paymentMethod: paymentMethod || "admin_assigned",
+        transactionReference: transactionReference || `TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      });
+    } catch (histErr) {
+      console.warn("Failed to create SubscriptionHistory record:", histErr);
+    }
 
     res.json({
       success: true,
@@ -258,7 +363,8 @@ const updateUserTierHandler = async (req, res, next) => {
         church: user.churchName,
         subscriptionTier: user.subscriptionTier,
         effectiveTier: typeof user.getEffectiveTier === "function" ? user.getEffectiveTier() : user.subscriptionTier,
-        trialRemainingDays: typeof user.getTrialRemainingDays === "function" ? user.getTrialRemainingDays() : 60,
+        trialRemainingDays: remainingDays,
+        daysRemaining: remainingDays,
         graceExpiresAt: user.graceExpiresAt,
         subscriptionExpiresAt: user.subscriptionExpiresAt,
       },

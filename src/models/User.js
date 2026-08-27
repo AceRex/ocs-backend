@@ -14,6 +14,10 @@ const PLAN_FEATURES = {
   free: [
     "timer.basic",
     "broadcast.basic",
+    "presentation.basic",
+    "pdf.view",
+    "scene.basic",
+    "song.basic",
   ],
   trial: [
     "timer.basic",
@@ -36,9 +40,10 @@ const PLAN_FEATURES = {
     "broadcast.basic",
     "timer.interval",
     "timer.change_view",
+    "session.recording",
+    "session.bumper",
     "presentation.basic",
     "pdf.view",
-    "pdf.edit",
     "slides.use",
     "scene.basic",
     "song.basic",
@@ -49,7 +54,10 @@ const PLAN_FEATURES = {
     "timer.start_time",
     "timer.interval",
     "timer.change_view",
+    "session.recording",
+    "session.bumper",
     "presentation.basic",
+    "presentation.multi_pptx",
     "presentation.intro",
     "presentation.outro",
     "pdf.view",
@@ -66,13 +74,35 @@ const PLAN_FEATURES = {
   ],
   premium: [
     "premium.full_access",
+    "timer.basic",
+    "broadcast.basic",
+    "timer.start_time",
+    "timer.interval",
+    "timer.change_view",
+    "session.recording",
+    "session.bumper",
+    "presentation.basic",
+    "presentation.multi_pptx",
+    "presentation.intro",
+    "presentation.outro",
+    "pdf.view",
+    "pdf.edit",
+    "slides.use",
+    "scene.basic",
+    "scene.animations",
+    "scene.transitions",
+    "song.basic",
+    "song.chorus_flow",
+    "song.repeat",
+    "sing_along",
+    "read_along",
   ],
 };
 
 const PLAN_QUOTAS = {
-  free: { maxDesktops: 1, maxMobileUsers: 1 },
+  free: { maxDesktops: 1, maxMobileUsers: 3 },
   trial: { maxDesktops: 1, maxMobileUsers: 3 },
-  mini: { maxDesktops: 1, maxMobileUsers: 3 },
+  mini: { maxDesktops: 1, maxMobileUsers: 5 },
   standard: { maxDesktops: 1, maxMobileUsers: 5 },
   large: { maxDesktops: 2, maxMobileUsers: 5 },
   premium: { maxDesktops: 99, maxMobileUsers: 99 },
@@ -243,6 +273,10 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    lastLoggedOutAllAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -292,9 +326,19 @@ userSchema.methods.getEffectiveTier = function () {
   return "free";
 };
 
-userSchema.methods.getTrialRemainingDays = function () {
+userSchema.methods.getRemainingDays = function () {
   const tier = typeof this.getEffectiveTier === "function" ? this.getEffectiveTier() : this.subscriptionTier;
   if (tier === "free") return 0;
+  if ((this.role === "super_admin" || this.role === "admin" || tier === "premium") && !this.subscriptionExpiresAt) {
+    return 999;
+  }
+
+  // If on a paid plan (mini, standard, large, premium) and subscriptionExpiresAt is defined
+  if (this.subscriptionExpiresAt && ["mini", "standard", "large", "premium"].includes(this.subscriptionTier)) {
+    const diffMs = new Date(this.subscriptionExpiresAt).getTime() - Date.now();
+    if (diffMs <= 0) return 0;
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  }
 
   const trialStart = this.trialStartedAt || this.createdAt || new Date();
   let trialEnd = this.trialEndsAt || this.graceExpiresAt;
@@ -315,10 +359,14 @@ userSchema.methods.getTrialRemainingDays = function () {
   return Math.min(60, Math.max(0, remaining));
 };
 
+userSchema.methods.getTrialRemainingDays = function () {
+  return this.getRemainingDays();
+};
+
 userSchema.methods.getEntitlements = function () {
   const tier = this.getEffectiveTier();
   const trialEnd = this.trialEndsAt || this.graceExpiresAt || new Date();
-  const remainingDays = this.getTrialRemainingDays();
+  const remainingDays = this.getRemainingDays();
   const isTrial = tier === "trial";
   const isTrialExpired = !isTrial && tier === "free" && new Date() > new Date(trialEnd);
   const features = PLAN_FEATURES[tier] || PLAN_FEATURES.free;
@@ -331,6 +379,7 @@ userSchema.methods.getEntitlements = function () {
     trialStartedAt: this.trialStartedAt || this.createdAt || new Date(),
     trialEndsAt: trialEnd,
     trialRemainingDays: remainingDays,
+    daysRemaining: remainingDays,
     subscriptionExpiresAt: this.subscriptionExpiresAt,
     features,
     limits: quotas,

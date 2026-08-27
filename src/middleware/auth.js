@@ -68,6 +68,14 @@ async function authMiddleware(req, res, next) {
       });
     }
 
+    // Check if user was globally logged out across all devices (e.g. device limit exceeded)
+    if (user.lastLoggedOutAllAt && decoded.iat && (decoded.iat * 1000) < new Date(user.lastLoggedOutAllAt).getTime()) {
+      return res.status(401).json({
+        error: 'token_revoked',
+        message: 'Session has been logged out across all devices. Please log in again.',
+      });
+    }
+
     // Re-check grace period on every request (Task 3.3 requirement)
     if (user.graceExpiresAt && new Date() > new Date(user.graceExpiresAt)) {
       return res.status(403).json({
@@ -120,7 +128,11 @@ async function optionalAuthMiddleware(req, res, next) {
     }
 
     const user = await User.findById(decoded.userId);
-    if (user && (!user.graceExpiresAt || new Date() <= new Date(user.graceExpiresAt))) {
+    if (
+      user &&
+      (!user.lastLoggedOutAllAt || !decoded.iat || (decoded.iat * 1000) >= new Date(user.lastLoggedOutAllAt).getTime()) &&
+      (!user.graceExpiresAt || new Date() <= new Date(user.graceExpiresAt))
+    ) {
       req.user = user;
       req.token = token;
       req.tokenPayload = decoded;

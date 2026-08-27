@@ -124,9 +124,16 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.user.subscriptionTier).toBe("free");
       expect(res.body.user.isTrial).toBe(false);
       expect(res.body.user.isTrialExpired).toBe(true);
-      expect(res.body.user.features).toEqual(["timer.basic", "broadcast.basic"]);
+      expect(res.body.user.features).toEqual([
+        "timer.basic",
+        "broadcast.basic",
+        "presentation.basic",
+        "pdf.view",
+        "scene.basic",
+        "song.basic",
+      ]);
       expect(res.body.user.licenseQuotas.maxDesktops).toBe(1);
-      expect(res.body.user.licenseQuotas.maxMobileUsers).toBe(1);
+      expect(res.body.user.licenseQuotas.maxMobileUsers).toBe(3);
     });
   });
 
@@ -169,7 +176,14 @@ describe("Auth Endpoints (/api/auth)", () => {
 
       expect(res.body.valid).toBe(true);
       expect(res.body.user.subscriptionTier).toBe("free");
-      expect(res.body.user.features).toEqual(["timer.basic", "broadcast.basic"]);
+      expect(res.body.user.features).toEqual([
+        "timer.basic",
+        "broadcast.basic",
+        "presentation.basic",
+        "pdf.view",
+        "scene.basic",
+        "song.basic",
+      ]);
     });
 
     it("returns valid: false, reason: token_revoked after token revocation", async () => {

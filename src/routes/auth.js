@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const User = require("../models/User");
 const RevokedToken = require("../models/RevokedToken");
 const GuestDevice = require("../models/GuestDevice");
+const SubscriptionHistory = require("../models/SubscriptionHistory");
 const { signToken, verifyToken, decodeToken } = require("../utils/jwt");
 const { authMiddleware } = require("../middleware/auth");
 const { adminMiddleware, superAdminMiddleware } = require("../middleware/admin");
@@ -60,6 +61,7 @@ function formatUserResponse(user) {
     trialStartedAt: entitlements.trialStartedAt,
     trialEndsAt: entitlements.trialEndsAt,
     trialRemainingDays: entitlements.trialRemainingDays,
+    daysRemaining: entitlements.daysRemaining ?? entitlements.trialRemainingDays,
     subscriptionExpiresAt: user.subscriptionExpiresAt || null,
     features: entitlements.features,
     licenseQuotas: {
@@ -75,6 +77,81 @@ function formatUserResponse(user) {
   };
 }
 
+function registerOrEnforceDevice(user, { platform, deviceId, deviceName }) {
+  if (!platform && !deviceId) return { exceeded: false };
+
+  const isMobile = platform === "mobile";
+  const cleanPlatform = isMobile ? "mobile" : "desktop";
+  const cleanId = deviceId || (cleanPlatform === "desktop" ? `desk-${user._id ? user._id.toString().slice(-4) : "node"}` : `mob-${user._id ? user._id.toString().slice(-4) : "node"}-${Date.now().toString(36).slice(-4)}`);
+  const cleanName = deviceName || (cleanPlatform === "desktop" ? "Sanctuary Desktop Station" : "Mobile Companion");
+
+  const entitlements = typeof user.getEntitlements === "function"
+    ? user.getEntitlements()
+    : { limits: User.PLAN_QUOTAS?.trial || { maxDesktops: 1, maxMobileUsers: 3 } };
+
+  const maxDesktops = entitlements.limits?.maxDesktops ?? (user.licenseQuotas?.maxDesktops || 1);
+  const maxMobileUsers = entitlements.limits?.maxMobileUsers ?? (user.licenseQuotas?.maxMobileUsers || 3);
+
+  const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
+  quotas.activeDesktops = quotas.activeDesktops || [];
+  quotas.activeMobileUsers = quotas.activeMobileUsers || [];
+
+  if (cleanPlatform === "desktop") {
+    const existing = quotas.activeDesktops.find(d => d.deviceId === cleanId);
+    if (!existing) {
+      if (quotas.activeDesktops.length + 1 > maxDesktops) {
+        user.lastLoggedOutAllAt = new Date();
+        quotas.activeDesktops = [];
+        quotas.activeMobileUsers = [];
+        user.licenseQuotas = quotas;
+        user.markModified("licenseQuotas");
+        return {
+          exceeded: true,
+          error: "device_limit_exceeded",
+          message: `Device limit exceeded (maximum ${maxDesktops} desktop station${maxDesktops > 1 ? "s" : ""} allowed for your plan). You have been automatically logged out on all devices. Please log in again to activate your primary device.`,
+        };
+      }
+      quotas.activeDesktops.push({
+        deviceId: cleanId,
+        name: cleanName,
+        platform: "desktop",
+        registeredAt: new Date(),
+        lastActiveAt: new Date(),
+      });
+    } else {
+      existing.lastActiveAt = new Date();
+    }
+  } else {
+    const existingMob = quotas.activeMobileUsers.find(m => m.deviceId === cleanId);
+    if (!existingMob) {
+      if (quotas.activeMobileUsers.length + 1 > maxMobileUsers) {
+        user.lastLoggedOutAllAt = new Date();
+        quotas.activeDesktops = [];
+        quotas.activeMobileUsers = [];
+        user.licenseQuotas = quotas;
+        user.markModified("licenseQuotas");
+        return {
+          exceeded: true,
+          error: "device_limit_exceeded",
+          message: `Device limit exceeded (maximum ${maxMobileUsers} mobile user${maxMobileUsers > 1 ? "s" : ""} allowed for your plan). You have been automatically logged out on all devices. Please log in again.`,
+        };
+      }
+      quotas.activeMobileUsers.push({
+        deviceId: cleanId,
+        name: cleanName,
+        platform: "mobile",
+        registeredAt: new Date(),
+        lastActiveAt: new Date(),
+      });
+    } else {
+      existingMob.lastActiveAt = new Date();
+    }
+  }
+
+  user.licenseQuotas = quotas;
+  user.markModified("licenseQuotas");
+  return { exceeded: false };
+}
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -360,50 +437,25 @@ const handleLogin = async (req, res, next) => {
 
     loginAttemptTracker.reset(req);
 
-    // Auto-register active device if platform is desktop or mobile
+    // Auto-register active device if platform is desktop or mobile & enforce quotas
     const clientPlatform = req.body?.platform || req.headers["x-ocs-platform"];
     const clientDeviceId = req.body?.deviceId || req.body?.machineId || req.headers["x-ocs-device-id"];
-    const clientDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"] || "Sanctuary Desktop Station";
+    const clientDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"];
 
-    if (clientPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || (clientDeviceId && clientPlatform !== "mobile")) {
-      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
-      quotas.activeDesktops = quotas.activeDesktops || [];
-      const cleanId = clientDeviceId || `desk-${user._id.toString().slice(-4)}`;
-      const existing = quotas.activeDesktops.find(d => d.deviceId === cleanId);
-      if (!existing) {
-        quotas.activeDesktops.push({
-          deviceId: cleanId,
-          name: clientDeviceName,
-          platform: "desktop",
-          registeredAt: new Date(),
-          lastActiveAt: new Date(),
-        });
-      } else {
-        existing.lastActiveAt = new Date();
-      }
-      user.licenseQuotas = quotas;
-      user.markModified("licenseQuotas");
-      await user.save();
-    } else if (clientPlatform === "mobile" || req.headers["x-ocs-platform"] === "mobile") {
-      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
-      quotas.activeMobileUsers = quotas.activeMobileUsers || [];
-      const cleanMobId = clientDeviceId || `mob-${user._id.toString().slice(-4)}-${Date.now().toString(36).slice(-4)}`;
-      const cleanMobName = clientDeviceName && clientDeviceName !== "Sanctuary Desktop Station" ? clientDeviceName : "Mobile Companion";
-      const existingMob = quotas.activeMobileUsers.find(m => m.deviceId === cleanMobId);
-      if (!existingMob) {
-        quotas.activeMobileUsers.push({
-          deviceId: cleanMobId,
-          name: cleanMobName,
-          platform: "mobile",
-          registeredAt: new Date(),
-          lastActiveAt: new Date(),
-        });
-      } else {
-        existingMob.lastActiveAt = new Date();
-      }
-      user.licenseQuotas = quotas;
-      user.markModified("licenseQuotas");
-      await user.save();
+    const devCheck = registerOrEnforceDevice(user, {
+      platform: clientPlatform,
+      deviceId: clientDeviceId,
+      deviceName: clientDeviceName,
+    });
+
+    await user.save();
+
+    if (devCheck.exceeded) {
+      return res.status(403).json({
+        error: devCheck.error,
+        message: devCheck.message,
+        loggedOutAll: true,
+      });
     }
 
     const { token } = signToken(user);
@@ -456,50 +508,30 @@ router.post("/validate-token", async (req, res, next) => {
       return res.status(200).json({ valid: false, reason: "user_not_found" });
     }
 
+    // Check if user was globally logged out
+    if (user.lastLoggedOutAllAt && decoded.iat && (decoded.iat * 1000) < new Date(user.lastLoggedOutAllAt).getTime()) {
+      return res.status(200).json({ valid: false, reason: "token_revoked" });
+    }
+
     // Auto-update active desktop device tracking on token verification
     const valPlatform = req.body?.platform || req.headers["x-ocs-platform"] || (req.headers["user-agent"]?.includes("Electron") ? "desktop" : undefined);
     const valDeviceId = req.body?.deviceId || req.body?.machineId || req.headers["x-ocs-device-id"];
-    const valDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"] || "Sanctuary Desktop Station";
+    const valDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"];
 
-    if (valPlatform === "desktop" || req.headers["x-ocs-platform"] === "desktop" || (valDeviceId && valPlatform !== "mobile") || req.headers["user-agent"]?.includes("Electron")) {
-      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
-      quotas.activeDesktops = quotas.activeDesktops || [];
-      const cleanId = valDeviceId || `desk-${user._id.toString().slice(-4)}`;
-      const existing = quotas.activeDesktops.find(d => d.deviceId === cleanId);
-      if (!existing) {
-        quotas.activeDesktops.push({
-          deviceId: cleanId,
-          name: valDeviceName,
-          platform: "desktop",
-          registeredAt: new Date(),
-          lastActiveAt: new Date(),
-        });
-      } else {
-        existing.lastActiveAt = new Date();
-      }
-      user.licenseQuotas = quotas;
-      user.markModified("licenseQuotas");
-      await user.save();
-    } else if (valPlatform === "mobile" || req.headers["x-ocs-platform"] === "mobile") {
-      const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
-      quotas.activeMobileUsers = quotas.activeMobileUsers || [];
-      const cleanMobId = valDeviceId || `mob-${user._id.toString().slice(-4)}-${Date.now().toString(36).slice(-4)}`;
-      const cleanMobName = valDeviceName && valDeviceName !== "Sanctuary Desktop Station" ? valDeviceName : "Mobile Companion";
-      const existingMob = quotas.activeMobileUsers.find(m => m.deviceId === cleanMobId);
-      if (!existingMob) {
-        quotas.activeMobileUsers.push({
-          deviceId: cleanMobId,
-          name: cleanMobName,
-          platform: "mobile",
-          registeredAt: new Date(),
-          lastActiveAt: new Date(),
-        });
-      } else {
-        existingMob.lastActiveAt = new Date();
-      }
-      user.licenseQuotas = quotas;
-      user.markModified("licenseQuotas");
-      await user.save();
+    const valDevCheck = registerOrEnforceDevice(user, {
+      platform: valPlatform,
+      deviceId: valDeviceId,
+      deviceName: valDeviceName,
+    });
+
+    await user.save();
+
+    if (valDevCheck.exceeded) {
+      return res.status(200).json({
+        valid: false,
+        reason: "device_limit_exceeded",
+        message: valDevCheck.message,
+      });
     }
 
     res.status(200).json({
@@ -881,14 +913,29 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
       return res.status(404).json({ error: "user_not_found", message: "User not found" });
     }
 
+    const previousPlan = user.subscriptionTier || "trial";
     user.subscriptionTier = tier;
 
+    let durationDays = 30;
     if (tier === "free") {
       user.subscriptionExpiresAt = null;
-    } else {
-      const durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 30);
+      user.trialEndsAt = new Date();
+      user.graceExpiresAt = new Date();
+    } else if (tier === "trial") {
+      durationDays = 60;
       const activationDate = new Date();
-      user.subscriptionExpiresAt = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+      const newExpiry = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+      user.trialStartedAt = activationDate;
+      user.trialEndsAt = newExpiry;
+      user.graceExpiresAt = newExpiry;
+      user.subscriptionExpiresAt = null;
+    } else {
+      durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 30);
+      const activationDate = new Date();
+      const newExpiry = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+      user.subscriptionStartedAt = activationDate;
+      user.subscriptionExpiresAt = newExpiry;
+      user.graceExpiresAt = newExpiry;
     }
 
     // Update license quotas for selected tier
@@ -897,6 +944,36 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
     user.licenseQuotas.maxMobileUsers = quotas.maxMobileUsers;
 
     await user.save();
+
+    const remainingDays = typeof user.getRemainingDays === "function" ? user.getRemainingDays() : (typeof user.getTrialRemainingDays === "function" ? user.getTrialRemainingDays() : 30);
+
+    try {
+      await SubscriptionHistory.create({
+        userId: user._id,
+        userName: user.name || "",
+        userEmail: user.email,
+        churchName: user.churchName || "",
+        previousPlan,
+        newPlan: user.subscriptionTier,
+        upgradedAt: new Date(),
+        durationMonths: Math.round(durationDays / 30),
+        daysRemaining: remainingDays,
+        newExpiryDate: user.subscriptionExpiresAt || user.trialEndsAt || user.graceExpiresAt,
+        changedBy: {
+          id: user._id.toString(),
+          name: user.name || "Customer",
+          email: user.email,
+          role: user.role || "user",
+        },
+        action: "user_upgrade",
+        reason: `Self-service plan update to ${tier.toUpperCase()}`,
+        billingCycle,
+        paymentMethod: "self_service",
+        transactionReference: `TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      });
+    } catch (histErr) {
+      console.warn("Failed to log SubscriptionHistory:", histErr);
+    }
 
     res.json({
       success: true,
@@ -923,11 +1000,15 @@ router.post("/profile/subscription/pay", authMiddleware, async (req, res, next) 
       return res.status(404).json({ error: "user_not_found", message: "User not found" });
     }
 
+    const previousPlan = user.subscriptionTier || "trial";
     const durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 30);
     const activationDate = new Date();
+    const newExpiry = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
 
     user.subscriptionTier = tier;
-    user.subscriptionExpiresAt = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    user.subscriptionStartedAt = activationDate;
+    user.subscriptionExpiresAt = newExpiry;
+    user.graceExpiresAt = newExpiry;
 
     const quotas = User.PLAN_QUOTAS?.[tier] || { maxDesktops: 1, maxMobileUsers: 3 };
     user.licenseQuotas.maxDesktops = quotas.maxDesktops;
@@ -935,10 +1016,41 @@ router.post("/profile/subscription/pay", authMiddleware, async (req, res, next) 
 
     await user.save();
 
+    const remainingDays = typeof user.getRemainingDays === "function" ? user.getRemainingDays() : (typeof user.getTrialRemainingDays === "function" ? user.getTrialRemainingDays() : 30);
+    const ref = transactionReference || `TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    try {
+      await SubscriptionHistory.create({
+        userId: user._id,
+        userName: user.name || "",
+        userEmail: user.email,
+        churchName: user.churchName || "",
+        previousPlan,
+        newPlan: user.subscriptionTier,
+        upgradedAt: activationDate,
+        durationMonths: Math.round(durationDays / 30),
+        daysRemaining: remainingDays,
+        newExpiryDate: newExpiry,
+        changedBy: {
+          id: user._id.toString(),
+          name: user.name || "Customer",
+          email: user.email,
+          role: user.role || "user",
+        },
+        action: "payment_activation",
+        reason: `Payment confirmed for ${tier.toUpperCase()} (${billingCycle})`,
+        billingCycle,
+        paymentMethod,
+        transactionReference: ref,
+      });
+    } catch (histErr) {
+      console.warn("Failed to log SubscriptionHistory:", histErr);
+    }
+
     res.json({
       success: true,
       message: "Payment confirmed! Your subscription is now active.",
-      reference: transactionReference || `TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      reference: ref,
       user: formatUserResponse(user),
     });
   } catch (err) {
@@ -1231,45 +1343,23 @@ router.get("/license", authMiddleware, async (req, res, next) => {
 const handleDeviceRegister = async (req, res, next) => {
   try {
     const { platform = "desktop", deviceId, name } = req.body;
-    const cleanPlatform = platform || "desktop";
     const user = req.user;
-    const cleanDeviceId = deviceId || `${cleanPlatform}-${user._id.toString().slice(-4)}`;
 
-    const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
-    quotas.activeDesktops = quotas.activeDesktops || [];
-    quotas.activeMobileUsers = quotas.activeMobileUsers || [];
+    const devCheck = registerOrEnforceDevice(user, {
+      platform,
+      deviceId,
+      deviceName: name,
+    });
 
-    if (cleanPlatform === "desktop") {
-      const exists = quotas.activeDesktops.find(d => d.deviceId === cleanDeviceId);
-      if (!exists) {
-        quotas.activeDesktops.push({
-          deviceId: cleanDeviceId,
-          name: name || "Sanctuary Display Station",
-          platform: "desktop",
-          registeredAt: new Date(),
-          lastActiveAt: new Date(),
-        });
-      } else {
-        exists.lastActiveAt = new Date();
-      }
-    } else if (cleanPlatform === "mobile") {
-      const exists = quotas.activeMobileUsers.find(m => m.deviceId === cleanDeviceId);
-      if (!exists) {
-        quotas.activeMobileUsers.push({
-          deviceId: cleanDeviceId,
-          name: name || "Worship Stage Device",
-          platform: "mobile",
-          registeredAt: new Date(),
-          lastActiveAt: new Date(),
-        });
-      } else {
-        exists.lastActiveAt = new Date();
-      }
-    }
-
-    user.licenseQuotas = quotas;
-    user.markModified("licenseQuotas");
     await user.save();
+
+    if (devCheck.exceeded) {
+      return res.status(403).json({
+        error: devCheck.error,
+        message: devCheck.message,
+        loggedOutAll: true,
+      });
+    }
 
     res.json({
       success: true,
@@ -1408,7 +1498,14 @@ router.put("/users/:id/tier", authMiddleware, superAdminMiddleware, async (req, 
   try {
     await connectToDatabase();
     const { id } = req.params;
-    const { subscriptionTier, extendMonths = 0 } = req.body;
+    const {
+      subscriptionTier,
+      extendMonths = 0,
+      reason,
+      billingCycle,
+      paymentMethod,
+      transactionReference,
+    } = req.body;
 
     let user = null;
     if (id && id.match(/^[0-9a-fA-F]{24}$/)) {
@@ -1424,21 +1521,72 @@ router.put("/users/:id/tier", authMiddleware, superAdminMiddleware, async (req, 
       return res.status(404).json({ error: "not_found", message: "User not found" });
     }
 
+    const previousPlan = user.subscriptionTier || "trial";
+    const normalizedNewTier = subscriptionTier ? subscriptionTier.replace(/_setup$/, "") : previousPlan;
+
     if (subscriptionTier) {
-      user.subscriptionTier = subscriptionTier;
+      user.subscriptionTier = normalizedNewTier;
     }
 
-    if (extendMonths > 0) {
-      const now = new Date();
-      const newExpiry = new Date(now.setMonth(now.getMonth() + Number(extendMonths)));
-      user.graceExpiresAt = newExpiry;
+    const now = new Date();
+    const months = Number(extendMonths) > 0 ? Number(extendMonths) : (normalizedNewTier === "trial" ? 2 : 1);
+    const newExpiry = new Date(now.getTime() + months * 30 * 24 * 60 * 60 * 1000);
+
+    if (["mini", "standard", "large", "premium"].includes(normalizedNewTier)) {
+      user.subscriptionStartedAt = now;
       user.subscriptionExpiresAt = newExpiry;
-      if (subscriptionTier === "trial") {
-        user.trialEndsAt = newExpiry;
-      }
+      user.graceExpiresAt = newExpiry;
+    } else if (normalizedNewTier === "trial") {
+      user.trialStartedAt = now;
+      user.trialEndsAt = newExpiry;
+      user.graceExpiresAt = newExpiry;
+      user.subscriptionExpiresAt = null;
+    } else if (normalizedNewTier === "free") {
+      user.subscriptionExpiresAt = null;
+      user.trialEndsAt = now;
+      user.graceExpiresAt = now;
     }
+
+    // Update license quotas
+    const quotas = User.PLAN_QUOTAS?.[normalizedNewTier] || User.PLAN_QUOTAS?.free || { maxDesktops: 1, maxMobileUsers: 3 };
+    if (!user.licenseQuotas) {
+      user.licenseQuotas = { activeDesktops: [], activeMobileUsers: [] };
+    }
+    user.licenseQuotas.maxDesktops = quotas.maxDesktops;
+    user.licenseQuotas.maxMobileUsers = quotas.maxMobileUsers;
 
     await user.save();
+
+    const remainingDays = typeof user.getRemainingDays === "function" ? user.getRemainingDays() : (typeof user.getTrialRemainingDays === "function" ? user.getTrialRemainingDays() : 30);
+
+    // Record in SubscriptionHistory
+    try {
+      await SubscriptionHistory.create({
+        userId: user._id,
+        userName: user.name || "",
+        userEmail: user.email,
+        churchName: user.churchName || "",
+        previousPlan,
+        newPlan: user.subscriptionTier,
+        upgradedAt: now,
+        durationMonths: months,
+        daysRemaining: remainingDays,
+        newExpiryDate: user.subscriptionExpiresAt || user.trialEndsAt || user.graceExpiresAt,
+        changedBy: req.user ? {
+          id: req.user.id || req.user._id,
+          name: req.user.name || "Admin",
+          email: req.user.email || "",
+          role: req.user.role || "admin",
+        } : { role: "system" },
+        action: req.user?.role === "super_admin" || req.user?.role === "admin" ? "admin_tier_change" : "user_upgrade",
+        reason: reason || `Tier changed from ${previousPlan.toUpperCase()} to ${user.subscriptionTier.toUpperCase()}`,
+        billingCycle: billingCycle || (months >= 12 ? "annually" : months >= 6 ? "semi-annual" : "monthly"),
+        paymentMethod: paymentMethod || "admin_assigned",
+        transactionReference: transactionReference || `TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      });
+    } catch (histErr) {
+      console.warn("Failed to create SubscriptionHistory record:", histErr);
+    }
 
     res.json({
       success: true,
@@ -1452,6 +1600,47 @@ router.put("/users/:id/tier", authMiddleware, superAdminMiddleware, async (req, 
 router.put("/user/:id/tier", authMiddleware, superAdminMiddleware, async (req, res, next) => {
   req.url = req.url.replace("/user/", "/users/");
   router.handle(req, res, next);
+});
+
+/**
+ * GET /auth/admin/subscription-history & /auth/subscription-history
+ */
+router.get("/admin/subscription-history", authMiddleware, superAdminMiddleware, async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    const { page = 1, limit = 50, search = "", plan = "" } = req.query;
+
+    const query = {};
+    if (search) {
+      const searchRegex = new RegExp(search.trim(), "i");
+      query.$or = [
+        { userName: searchRegex },
+        { userEmail: searchRegex },
+        { churchName: searchRegex },
+        { transactionReference: searchRegex },
+      ];
+    }
+    if (plan && plan !== "all") {
+      query.$or = [{ previousPlan: plan }, { newPlan: plan }];
+    }
+
+    const total = await SubscriptionHistory.countDocuments(query);
+    const history = await SubscriptionHistory.find(query)
+      .sort({ upgradedAt: -1, createdAt: -1 })
+      .skip((Number(page) - 1) * Number(limit))
+      .limit(Number(limit));
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      limit: Number(limit),
+      totalPages: Math.ceil(total / Number(limit)),
+      history,
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /**
