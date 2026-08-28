@@ -101,7 +101,7 @@ const PLAN_FEATURES = {
 
 const PLAN_QUOTAS = {
   free: { maxDesktops: 1, maxMobileUsers: 3 },
-  trial: { maxDesktops: 1, maxMobileUsers: 3 },
+  trial: { maxDesktops: 2, maxMobileUsers: 5 },
   mini: { maxDesktops: 1, maxMobileUsers: 5 },
   standard: { maxDesktops: 1, maxMobileUsers: 5 },
   large: { maxDesktops: 2, maxMobileUsers: 5 },
@@ -220,11 +220,11 @@ const userSchema = new mongoose.Schema(
     licenseQuotas: {
       maxDesktops: {
         type: Number,
-        default: 1, // Default for 2-month Trial (Mini setup)
+        default: 2, // Default for 2-month Trial & Standard/Large (2 desktops, 5 mobiles)
       },
       maxMobileUsers: {
         type: Number,
-        default: 3, // Default for 2-month Trial (Mini setup)
+        default: 5, // Default for 2-month Trial & Standard/Large (2 desktops, 5 mobiles)
       },
       activeDesktops: [
         {

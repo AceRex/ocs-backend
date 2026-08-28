@@ -66,8 +66,8 @@ function formatUserResponse(user) {
     subscriptionExpiresAt: entitlements.subscriptionExpiresAt || user.subscriptionExpiresAt || null,
     features: entitlements.features,
     licenseQuotas: {
-      maxDesktops: entitlements.limits?.maxDesktops || 1,
-      maxMobileUsers: entitlements.limits?.maxMobileUsers || 3,
+      maxDesktops: entitlements.limits?.maxDesktops ?? (user.licenseQuotas?.maxDesktops || 2),
+      maxMobileUsers: entitlements.limits?.maxMobileUsers ?? (user.licenseQuotas?.maxMobileUsers || 5),
       activeDesktops: user.licenseQuotas?.activeDesktops || [],
       activeMobileUsers: user.licenseQuotas?.activeMobileUsers || [],
     },
@@ -91,12 +91,14 @@ function registerOrEnforceDevice(user, { platform, deviceId, deviceName }) {
 
   const entitlements = typeof user.getEntitlements === "function"
     ? user.getEntitlements()
-    : { limits: User.PLAN_QUOTAS?.trial || { maxDesktops: 1, maxMobileUsers: 3 } };
+    : { limits: User.PLAN_QUOTAS?.trial || { maxDesktops: 2, maxMobileUsers: 5 } };
 
-  const maxDesktops = entitlements.limits?.maxDesktops ?? (user.licenseQuotas?.maxDesktops || 1);
-  const maxMobileUsers = entitlements.limits?.maxMobileUsers ?? (user.licenseQuotas?.maxMobileUsers || 3);
+  const maxDesktops = entitlements.limits?.maxDesktops ?? (user.licenseQuotas?.maxDesktops || 2);
+  const maxMobileUsers = entitlements.limits?.maxMobileUsers ?? (user.licenseQuotas?.maxMobileUsers || 5);
 
-  const quotas = user.licenseQuotas || { maxDesktops: 1, maxMobileUsers: 3, activeDesktops: [], activeMobileUsers: [] };
+  const quotas = user.licenseQuotas || { maxDesktops, maxMobileUsers, activeDesktops: [], activeMobileUsers: [] };
+  quotas.maxDesktops = maxDesktops;
+  quotas.maxMobileUsers = maxMobileUsers;
   quotas.activeDesktops = quotas.activeDesktops || [];
   quotas.activeMobileUsers = quotas.activeMobileUsers || [];
 
@@ -220,8 +222,8 @@ const handleGeneralRegister = async (req, res, next) => {
       trialEndsAt,
       graceExpiresAt: trialEndsAt,
       licenseQuotas: {
-        maxDesktops: 1,
-        maxMobileUsers: 3,
+        maxDesktops: 2,
+        maxMobileUsers: 5,
         activeDesktops: [],
         activeMobileUsers: [],
       },

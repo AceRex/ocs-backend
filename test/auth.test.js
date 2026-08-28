@@ -33,8 +33,8 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.user.features).toContain("presentation.basic");
       expect(res.body.user.features).toContain("song.basic");
       expect(res.body.user.features).toContain("pdf.view");
-      expect(res.body.user.licenseQuotas.maxDesktops).toBe(1);
-      expect(res.body.user.licenseQuotas.maxMobileUsers).toBe(3);
+      expect(res.body.user.licenseQuotas.maxDesktops).toBe(2);
+      expect(res.body.user.licenseQuotas.maxMobileUsers).toBe(5);
     });
 
     it("accurately calculates 59-60 days left for user registered yesterday", async () => {
@@ -242,7 +242,7 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.success).toBe(true);
       expect(res.body.entitlements.tier).toBe("trial");
       expect(res.body.entitlements.features).toContain("presentation.basic");
-      expect(res.body.entitlements.limits.maxDesktops).toBe(1);
+      expect(res.body.entitlements.limits.maxDesktops).toBe(2);
     });
 
     it("rejects unauthenticated request with 401", async () => {
