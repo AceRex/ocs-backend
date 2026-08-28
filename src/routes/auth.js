@@ -87,7 +87,7 @@ function registerOrEnforceDevice(user, { platform, deviceId, deviceName }) {
   const isMobile = platform === "mobile";
   const cleanPlatform = isMobile ? "mobile" : "desktop";
   const cleanId = String(deviceId).trim();
-  const cleanName = deviceName || (cleanPlatform === "desktop" ? "Sanctuary Desktop Station" : "Mobile Companion");
+  const cleanName = deviceName || (cleanPlatform === "desktop" ? "Desktop Workstation" : "Mobile Device");
 
   const entitlements = typeof user.getEntitlements === "function"
     ? user.getEntitlements()
@@ -1213,41 +1213,6 @@ router.get("/users", authMiddleware, adminMiddleware, async (req, res, next) => 
       : { role: { $in: ["church_admin", "user"] } };
 
     let users = await User.find(query).sort({ createdAt: -1 });
-
-    if (users.length === 0 && !req.query.all) {
-      const defaultPasswordHash = await bcrypt.hash("Waveio123!@", 10);
-      const seeded = await User.create([
-        {
-          name: "Pastor James A.",
-          email: "pastor@redeemed.ng",
-          passwordHash: defaultPasswordHash,
-          churchName: "Redeemed Christian Church",
-          role: "church_admin",
-          graceExpiresAt: User.computeGraceExpiry(2),
-          licenseQuotas: {
-            maxDesktops: 2,
-            maxMobileUsers: 5,
-            activeDesktops: [{ deviceId: "desk-01", name: "Main Sanctuary Display" }],
-            activeMobileUsers: [{ deviceId: "mob-01", name: "Stage Companion 1" }, { deviceId: "mob-02", name: "Worship Leader iPhone" }],
-          },
-        },
-        {
-          name: "Sarah M.",
-          email: "sarah@grace.org",
-          passwordHash: defaultPasswordHash,
-          churchName: "Grace Community Church",
-          role: "church_admin",
-          graceExpiresAt: User.computeGraceExpiry(2),
-          licenseQuotas: {
-            maxDesktops: 2,
-            maxMobileUsers: 5,
-            activeDesktops: [{ deviceId: "desk-02", name: "Auditorium PC" }],
-            activeMobileUsers: [{ deviceId: "mob-03", name: "Pastor iPad" }],
-          },
-        },
-      ]);
-      users = seeded;
-    }
 
     res.json({
       success: true,

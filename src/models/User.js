@@ -229,7 +229,7 @@ const userSchema = new mongoose.Schema(
       activeDesktops: [
         {
           deviceId: { type: String, trim: true },
-          name: { type: String, default: "Sanctuary Desktop" },
+          name: { type: String, default: "Desktop Workstation" },
           platform: { type: String, default: "desktop" },
           registeredAt: { type: Date, default: Date.now },
           lastActiveAt: { type: Date, default: Date.now },
@@ -238,7 +238,7 @@ const userSchema = new mongoose.Schema(
       activeMobileUsers: [
         {
           deviceId: { type: String, trim: true },
-          name: { type: String, default: "Worship Stage Companion" },
+          name: { type: String, default: "Mobile Device" },
           platform: { type: String, default: "mobile" },
           registeredAt: { type: Date, default: Date.now },
           lastActiveAt: { type: Date, default: Date.now },
