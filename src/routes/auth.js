@@ -101,16 +101,8 @@ function registerOrEnforceDevice(user, { platform, deviceId, deviceName }) {
     const existing = quotas.activeDesktops.find(d => d.deviceId === cleanId);
     if (!existing) {
       if (quotas.activeDesktops.length + 1 > maxDesktops) {
-        user.lastLoggedOutAllAt = new Date();
-        quotas.activeDesktops = [];
-        quotas.activeMobileUsers = [];
-        user.licenseQuotas = quotas;
-        user.markModified("licenseQuotas");
-        return {
-          exceeded: true,
-          error: "device_limit_exceeded",
-          message: `Device limit exceeded (maximum ${maxDesktops} desktop station${maxDesktops > 1 ? "s" : ""} allowed for your plan). You have been automatically logged out on all devices. Please log in again to activate your primary device.`,
-        };
+        // Gracefully rotate: keep the most recent (maxDesktops - 1) devices and add the new one
+        quotas.activeDesktops = quotas.activeDesktops.slice(-(Math.max(0, maxDesktops - 1)));
       }
       quotas.activeDesktops.push({
         deviceId: cleanId,
@@ -121,21 +113,14 @@ function registerOrEnforceDevice(user, { platform, deviceId, deviceName }) {
       });
     } else {
       existing.lastActiveAt = new Date();
+      if (cleanName) existing.name = cleanName;
     }
   } else {
     const existingMob = quotas.activeMobileUsers.find(m => m.deviceId === cleanId);
     if (!existingMob) {
       if (quotas.activeMobileUsers.length + 1 > maxMobileUsers) {
-        user.lastLoggedOutAllAt = new Date();
-        quotas.activeDesktops = [];
-        quotas.activeMobileUsers = [];
-        user.licenseQuotas = quotas;
-        user.markModified("licenseQuotas");
-        return {
-          exceeded: true,
-          error: "device_limit_exceeded",
-          message: `Device limit exceeded (maximum ${maxMobileUsers} mobile user${maxMobileUsers > 1 ? "s" : ""} allowed for your plan). You have been automatically logged out on all devices. Please log in again.`,
-        };
+        // Gracefully rotate: keep the most recent (maxMobileUsers - 1) devices and add the new one
+        quotas.activeMobileUsers = quotas.activeMobileUsers.slice(-(Math.max(0, maxMobileUsers - 1)));
       }
       quotas.activeMobileUsers.push({
         deviceId: cleanId,
@@ -146,6 +131,7 @@ function registerOrEnforceDevice(user, { platform, deviceId, deviceName }) {
       });
     } else {
       existingMob.lastActiveAt = new Date();
+      if (cleanName) existingMob.name = cleanName;
     }
   }
 
@@ -475,6 +461,111 @@ const handleLogin = async (req, res, next) => {
 router.post("/login", handleLogin);
 router.post("/admin/login", handleLogin);
 router.post("/login/admin", handleLogin);
+
+/**
+ * POST /auth/google & POST /auth/oauth/google
+ * Real Google SSO Authentication handler
+ */
+const handleGoogleAuth = async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    let { email, name, avatarUrl, credential, googleId } = req.body;
+
+    // If Google JWT credential is provided from Google Identity Services, decode it
+    if (credential && typeof credential === "string") {
+      try {
+        const parts = credential.split(".");
+        if (parts.length === 3) {
+          const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
+          if (payload.email) email = payload.email;
+          if (payload.name) name = payload.name;
+          if (payload.picture) avatarUrl = payload.picture;
+          if (payload.sub) googleId = payload.sub;
+        }
+      } catch (e) {
+        console.warn("[Google Auth] Failed to parse credential payload:", e.message);
+      }
+    }
+
+    if (!email || !EMAIL_REGEX.test(email)) {
+      return res.status(400).json({
+        error: "invalid_google_account",
+        message: "A valid email is required for Google authentication",
+      });
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+    let user = await User.findOne({ email: cleanEmail });
+
+    if (!user) {
+      // First-time Google user: automatically provision standard account
+      const randomPassword = crypto.randomBytes(24).toString("hex");
+      const passwordHash = await bcrypt.hash(randomPassword, 10);
+      const effectiveName = (name || cleanEmail.split("@")[0]).trim();
+      const trialEndsAt = User.computeTrialExpiry ? User.computeTrialExpiry(2) : User.computeGraceExpiry(2);
+
+      user = await User.create({
+        name: effectiveName,
+        email: cleanEmail,
+        passwordHash,
+        churchName: `${effectiveName}'s Ministry`,
+        avatarUrl: avatarUrl || "",
+        customerType: "church",
+        role: "church_admin",
+        subscriptionTier: "trial",
+        trialStartedAt: new Date(),
+        trialEndsAt,
+        graceExpiresAt: trialEndsAt,
+        licenseQuotas: {
+          maxDesktops: 1,
+          maxMobileUsers: 3,
+          activeDesktops: [],
+          activeMobileUsers: [],
+        },
+      });
+
+      sendWelcomeEmail(user).catch((err) => {
+        console.error("[Welcome Email] Failed to send welcome email:", err.message);
+      });
+    } else {
+      // Existing user: update name and avatar if provided
+      if (name && (!user.name || user.name === cleanEmail.split("@")[0])) {
+        user.name = name.trim();
+      }
+      if (avatarUrl && !user.avatarUrl) {
+        user.avatarUrl = avatarUrl;
+      }
+    }
+
+    // Auto-register device if platform specified
+    const clientPlatform = req.body?.platform || req.headers["x-ocs-platform"];
+    const clientDeviceId = req.body?.deviceId || req.body?.machineId || req.headers["x-ocs-device-id"];
+    const clientDeviceName = req.body?.deviceName || req.body?.name || req.headers["x-ocs-device-name"];
+
+    registerOrEnforceDevice(user, {
+      platform: clientPlatform,
+      deviceId: clientDeviceId,
+      deviceName: clientDeviceName,
+    });
+
+    await user.save();
+
+    loginAttemptTracker.reset(req);
+    const { token } = signToken(user);
+
+    res.json({
+      success: true,
+      message: "Google Sign-In successful",
+      token,
+      user: formatUserResponse(user),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+router.post("/google", handleGoogleAuth);
+router.post("/oauth/google", handleGoogleAuth);
 
 /**
  * POST /auth/validate-token
