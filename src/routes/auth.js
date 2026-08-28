@@ -79,11 +79,14 @@ function formatUserResponse(user) {
 }
 
 function registerOrEnforceDevice(user, { platform, deviceId, deviceName }) {
-  if (!platform && !deviceId) return { exceeded: false };
+  // Only register hardware stations if a valid deviceId is provided by the native client (Electron / Mobile)
+  if (!deviceId || (platform !== "desktop" && platform !== "mobile")) {
+    return { exceeded: false };
+  }
 
   const isMobile = platform === "mobile";
   const cleanPlatform = isMobile ? "mobile" : "desktop";
-  const cleanId = deviceId || (cleanPlatform === "desktop" ? `desk-${user._id ? user._id.toString().slice(-4) : "node"}` : `mob-${user._id ? user._id.toString().slice(-4) : "node"}-${Date.now().toString(36).slice(-4)}`);
+  const cleanId = String(deviceId).trim();
   const cleanName = deviceName || (cleanPlatform === "desktop" ? "Sanctuary Desktop Station" : "Mobile Companion");
 
   const entitlements = typeof user.getEntitlements === "function"
@@ -967,6 +970,7 @@ router.delete("/profile/devices/:deviceId", authMiddleware, async (req, res, nex
       (d) => d.deviceId !== deviceId && String(d._id) !== deviceId
     );
 
+    user.markModified("licenseQuotas");
     await user.save();
 
     res.json({
