@@ -1,15 +1,15 @@
 const cloudinary = require("cloudinary").v2;
 
-// Configure Cloudinary from environment variables or CLOUDINARY_URL
+// Configure Cloudinary strictly from environment variables or CLOUDINARY_URL (no hardcoded fallbacks)
 if (process.env.CLOUDINARY_URL) {
   cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL,
   });
 } else {
   cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "churchocs",
-    api_key: process.env.CLOUDINARY_API_KEY || "863715873723654",
-    api_secret: process.env.CLOUDINARY_API_SECRET || "Uq2Z8_q1Q2jL1uP7u9g0kP9k9Xw",
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "",
+    api_key: process.env.CLOUDINARY_API_KEY || "",
+    api_secret: process.env.CLOUDINARY_API_SECRET || "",
     secure: true,
   });
 }
@@ -21,6 +21,14 @@ if (process.env.CLOUDINARY_URL) {
  * @returns {Promise<{ secure_url: string, public_id: string }>}
  */
 async function uploadToCloudinary(imageBase64, folder = "ocs_avatars") {
+  if (
+    !process.env.CLOUDINARY_URL &&
+    (!process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET)
+  ) {
+    throw new Error(
+      "Cloudinary credentials are not configured in environment variables.",
+    );
+  }
   try {
     const result = await cloudinary.uploader.upload(imageBase64, {
       folder,

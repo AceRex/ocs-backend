@@ -16,7 +16,7 @@ const planPermissionSchema = new mongoose.Schema(
     },
     category: {
       type: String,
-      enum: ["timer", "broadcast", "documents", "presentation", "worship", "system", "custom"],
+      enum: ["timer", "broadcast", "documents", "presentation", "worship", "sessions", "system", "custom"],
       default: "custom",
     },
     description: {

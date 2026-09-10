@@ -202,6 +202,18 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.reason).toBe("token_revoked");
     });
 
+    it("rejects token revocation if cryptographic signature is invalid or tampered", async () => {
+      // Create a tampered token by modifying the signature
+      const tamperedToken = validToken.slice(0, -5) + "XXXXX";
+      const res = await request(app)
+        .post("/api/auth/revoke")
+        .send({ token: tamperedToken })
+        .expect(401);
+
+      expect(res.body.error).toBe("invalid_token");
+      expect(res.body.message).toContain("cryptographic signature");
+    });
+
     it("returns valid: false, reason: invalid_token for malformed token", async () => {
       const res = await request(app)
         .post("/api/auth/validate-token")
@@ -332,10 +344,42 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.message).toContain("Customer accounts are not authorized");
     });
 
-    it("allows super_admin / master admin to log in to admin console successfully", async () => {
+    it("strictly rejects removed master backdoor credentials on admin login with 401 invalid_credentials", async () => {
+      for (const email of ["waveio@ocs.app", "admin@waveio.app", "waveio"]) {
+        const res = await request(app)
+          .post("/api/auth/admin/login")
+          .send({ email, password: "Waveio123!@" })
+          .expect(401);
+        expect(res.body.error).toBe("invalid_credentials");
+      }
+    });
+
+    it("strictly rejects removed master backdoor credentials on customer login with 401 invalid_credentials", async () => {
+      for (const email of ["waveio@ocs.app", "admin@waveio.app", "waveio"]) {
+        const res = await request(app)
+          .post("/api/auth/login")
+          .send({ email, password: "Waveio123!@" })
+          .expect(401);
+        expect(res.body.error).toBe("invalid_credentials");
+      }
+    });
+
+    it("allows legitimately seeded super_admin to log in to admin console successfully", async () => {
+      const User = require("../src/models/User");
+      const bcrypt = require("bcryptjs");
+      const passwordHash = await bcrypt.hash("LegitAdminPass123!", 10);
+      await User.create({
+        name: "Legit Super Admin",
+        email: "superadmin@churchocs.com",
+        passwordHash,
+        churchName: "Grace Church Global",
+        role: "super_admin",
+        graceExpiresAt: User.computeGraceExpiry(120),
+      });
+
       const res = await request(app)
         .post("/api/auth/admin/login")
-        .send({ email: "waveio@ocs.app", password: "Waveio123!@" })
+        .send({ email: "superadmin@churchocs.com", password: "LegitAdminPass123!" })
         .expect(200);
 
       expect(res.body.success).toBe(true);

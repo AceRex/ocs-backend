@@ -11,10 +11,12 @@ const env = {
     return process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/ocs";
   },
   get JWT_SECRET() {
-    return (
-      process.env.JWT_SECRET ||
-      "ocs_dev_secret_jwt_key_should_be_overridden_in_prod"
-    );
+    if (!process.env.JWT_SECRET) {
+      throw new Error(
+        "FATAL: JWT_SECRET environment variable is required. Application startup aborted.",
+      );
+    }
+    return process.env.JWT_SECRET;
   },
   get JWT_EXPIRY() {
     return process.env.JWT_EXPIRY || "30d";
@@ -70,10 +72,10 @@ const env = {
   },
 };
 
-// Validate critical secrets in production/runtime
-if (!env.JWT_SECRET && env.NODE_ENV === "production") {
+// Validate critical secrets at startup: refuse to start without JWT_SECRET
+if (!process.env.JWT_SECRET) {
   throw new Error(
-    "FATAL: JWT_SECRET environment variable is required in production.",
+    "FATAL: JWT_SECRET environment variable is required. Application startup aborted.",
   );
 }
 

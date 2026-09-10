@@ -390,4 +390,6 @@ const updateUserTierHandler = async (req, res, next) => {
 router.put("/user/:id/tier", authMiddleware, superAdminMiddleware, updateUserTierHandler);
 router.put("/users/:id/tier", authMiddleware, superAdminMiddleware, updateUserTierHandler);
 
+router.ensurePermissionsSeeded = ensurePermissionsSeeded;
+
 module.exports = router;

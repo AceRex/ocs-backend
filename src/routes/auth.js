@@ -295,7 +295,7 @@ const handleAdminRegister = async (req, res, next) => {
       name: name?.trim() || "In-House Admin",
       email: cleanEmail,
       passwordHash,
-      churchName: (department || churchName || "WaveIO In-House HQ").trim(),
+      churchName: (department || churchName || "OCS Administration").trim(),
       role: "super_admin",
       graceExpiresAt,
       licenseQuotas: {
@@ -356,46 +356,6 @@ const handleLogin = async (req, res, next) => {
         error: "rate_limited",
         message: "Account temporarily locked due to too many failed login attempts",
         retryAfterSeconds: lockout.remainingSeconds,
-      });
-    }
-
-    // Master In-House Admin credentials bypass
-    if (
-      (cleanEmail === "waveio" || cleanEmail === "waveio@ocs.app" || cleanEmail === "admin@waveio.app") &&
-      password === "Waveio123!@"
-    ) {
-      let masterUser = await User.findOne({
-        email: { $in: ["waveio", "waveio@ocs.app", "admin@waveio.app"] },
-      });
-
-      if (!masterUser) {
-        const passwordHash = await bcrypt.hash("Waveio123!@", 10);
-        masterUser = await User.create({
-          name: "WaveIO Master Admin",
-          email: "waveio@ocs.app",
-          passwordHash,
-          churchName: "WaveIO In-House HQ",
-          role: "super_admin",
-          graceExpiresAt: User.computeGraceExpiry(120),
-          licenseQuotas: { maxDesktops: 99, maxMobileUsers: 99, activeDesktops: [], activeMobileUsers: [] },
-        });
-      }
-
-      loginAttemptTracker.reset(req);
-      const { token } = signToken(masterUser);
-      return res.json({
-        success: true,
-        message: "Master Admin Login successful",
-        token,
-        user: {
-          id: masterUser.id || masterUser._id.toString(),
-          name: masterUser.name || "WaveIO Master Admin",
-          email: masterUser.email,
-          churchName: masterUser.churchName,
-          role: "super_admin",
-          licenseQuotas: masterUser.licenseQuotas,
-          graceExpiresAt: masterUser.graceExpiresAt,
-        },
       });
     }
 
@@ -710,12 +670,18 @@ router.post("/revoke", async (req, res, next) => {
       return res.status(400).json({ error: "missing_token", message: "Token is required" });
     }
 
-    const decoded = decodeToken(token);
-    if (decoded && decoded.jti) {
-      const expiresAt = decoded.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+    let verified;
+    try {
+      verified = verifyToken(token);
+    } catch (err) {
+      return res.status(401).json({ error: "invalid_token", message: "Invalid or tampered token: cryptographic signature verification failed" });
+    }
+
+    if (verified && verified.jti) {
+      const expiresAt = verified.exp ? new Date(verified.exp * 1000) : new Date(Date.now() + 24 * 60 * 60 * 1000);
       await RevokedToken.create({
-        tokenId: decoded.jti,
-        userId: decoded.userId,
+        tokenId: verified.jti,
+        userId: verified.userId,
         expiresAt,
       });
     }
@@ -735,12 +701,15 @@ router.post("/logout", async (req, res, next) => {
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (token) {
-      const decoded = decodeToken(token);
-      if (decoded && decoded.jti) {
-        const expiresAt = decoded.exp ? new Date(decoded.exp * 1000) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+      let verified;
+      try {
+        verified = verifyToken(token);
+      } catch (_) {}
+      if (verified && verified.jti) {
+        const expiresAt = verified.exp ? new Date(verified.exp * 1000) : new Date(Date.now() + 24 * 60 * 60 * 1000);
         await RevokedToken.create({
-          tokenId: decoded.jti,
-          userId: decoded.userId,
+          tokenId: verified.jti,
+          userId: verified.userId,
           expiresAt,
         });
       }
@@ -1162,21 +1131,7 @@ router.post("/profile/subscription/pay", authMiddleware, async (req, res, next) 
 const handleGetAdminUsers = async (req, res, next) => {
   try {
     await connectToDatabase();
-    let adminUsers = await User.find({ role: { $in: ["super_admin", "admin"] } }).sort({ createdAt: -1 });
-
-    if (adminUsers.length === 0) {
-      const defaultPasswordHash = await bcrypt.hash("Waveio123!@", 10);
-      const masterAdmin = await User.create({
-        name: "WaveIO Master Admin",
-        email: "waveio@ocs.app",
-        passwordHash: defaultPasswordHash,
-        churchName: "WaveIO In-House HQ",
-        role: "super_admin",
-        graceExpiresAt: User.computeGraceExpiry(120),
-        licenseQuotas: { maxDesktops: 99, maxMobileUsers: 99, activeDesktops: [], activeMobileUsers: [] },
-      });
-      adminUsers = [masterAdmin];
-    }
+    const adminUsers = await User.find({ role: { $in: ["super_admin", "admin"] } }).sort({ createdAt: -1 });
 
     res.json({
       success: true,
