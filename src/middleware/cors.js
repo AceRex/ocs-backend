@@ -1,5 +1,3 @@
-const env = require("../config/env");
-
 /**
  * Universal CORS middleware for OCS Web & Netlify Functions.
  * Allows ocs-web-three.vercel.app, preview deploys, local development, and desktop apps.
@@ -7,7 +5,11 @@ const env = require("../config/env");
 function corsMiddleware(req, res, next) {
   const origin = req.headers.origin;
 
-  // Set CORS headers for all incoming origins
+  const requestHeaders = req.headers["access-control-request-headers"];
+  const baseAllowedHeaders =
+    "Content-Type, Authorization, X-Requested-With, Accept, Origin, Access-Control-Request-Method, Access-Control-Request-Headers, x-ocs-platform, x-ocs-device-id, x-ocs-device-name, x-ocs-client-version";
+
+  // Set CORS headers for incoming origins
   res.setHeader("Access-Control-Allow-Origin", origin || "*");
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader(
@@ -16,7 +18,7 @@ function corsMiddleware(req, res, next) {
   );
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Authorization, X-Requested-With, Accept, Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+    requestHeaders ? `${baseAllowedHeaders}, ${requestHeaders}` : baseAllowedHeaders
   );
   res.setHeader("Access-Control-Max-Age", "86400");
 
