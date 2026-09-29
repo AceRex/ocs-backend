@@ -2,6 +2,7 @@ const request = require("supertest");
 const app = require("../src/app");
 const User = require("../src/models/User");
 const RevokedToken = require("../src/models/RevokedToken");
+const { signToken } = require("../src/utils/jwt");
 require("./setup");
 
 describe("Auth Endpoints (/api/auth)", () => {
@@ -385,6 +386,95 @@ describe("Auth Endpoints (/api/auth)", () => {
       expect(res.body.success).toBe(true);
       expect(res.body.user.role).toBe("super_admin");
       expect(res.body.token).toBeDefined();
+    });
+  });
+
+  describe("Security Enhancements & Vulnerability Mitigations", () => {
+    it("rejects Google SSO login with invalid/forged credential token", async () => {
+      const res = await request(app)
+        .post("/api/auth/google")
+        .send({
+          email: "victim@churchocs.com",
+          credential: "forged.google.token",
+        })
+        .expect(401);
+
+      expect(res.body.error).toBe("invalid_google_credential");
+    });
+
+    it("invalidates old tokens when password is changed", async () => {
+      const User = require("../src/models/User");
+      const bcrypt = require("bcryptjs");
+      const user = await User.create({
+        name: "Security Test User",
+        email: "sectest@churchocs.com",
+        passwordHash: await bcrypt.hash("OldPassword123!", 10),
+        churchName: "Security Baptist",
+        role: "user",
+        graceExpiresAt: User.computeGraceExpiry(3),
+      });
+
+      const oldToken = signToken(user).token;
+
+      // Verify old token works initially
+      await request(app)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${oldToken}`)
+        .expect(200);
+
+      // Wait 1100ms to cross second boundary for JWT iat precision
+      await new Promise((r) => setTimeout(r, 1100));
+
+      // Change password
+      const changeRes = await request(app)
+        .post("/api/auth/profile/password")
+        .set("Authorization", `Bearer ${oldToken}`)
+        .send({
+          currentPassword: "OldPassword123!",
+          newPassword: "NewSecurePassword123!",
+        })
+        .expect(200);
+
+      expect(changeRes.body.token).toBeDefined();
+      const newToken = changeRes.body.token;
+
+      // Old token must now be rejected as revoked
+      const oldCheckRes = await request(app)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${oldToken}`)
+        .expect(401);
+
+      expect(oldCheckRes.body.error).toBe("token_revoked");
+
+      // New token must work
+      await request(app)
+        .get("/api/auth/me")
+        .set("Authorization", `Bearer ${newToken}`)
+        .expect(200);
+    });
+
+    it("rejects non-admin self-service upgrades to paid subscription tiers with 403 payment_required", async () => {
+      const User = require("../src/models/User");
+      const bcrypt = require("bcryptjs");
+      const user = await User.create({
+        name: "Regular User",
+        email: "reguser@churchocs.com",
+        passwordHash: await bcrypt.hash("UserPass123!", 10),
+        churchName: "Regular Chapel",
+        role: "user",
+        subscriptionTier: "trial",
+        graceExpiresAt: User.computeGraceExpiry(3),
+      });
+
+      const token = signToken(user).token;
+
+      const res = await request(app)
+        .post("/api/auth/profile/subscription/change")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ tier: "premium" })
+        .expect(403);
+
+      expect(res.body.error).toBe("payment_required");
     });
   });
 });

@@ -10,7 +10,7 @@ const { connectToDatabase } = require('../config/db');
  */
 async function authMiddleware(req, res, next) {
   try {
-    const authHeader = req.headers.authorization || req.headers['x-access-token'];
+    const authHeader = req.headers.authorization;
     if (!authHeader) {
       return res.status(401).json({
         error: 'unauthorized',
@@ -68,8 +68,9 @@ async function authMiddleware(req, res, next) {
       });
     }
 
-    // Check if user was globally logged out across all devices (e.g. device limit exceeded)
-    if (user.lastLoggedOutAllAt && decoded.iat && (decoded.iat * 1000) < new Date(user.lastLoggedOutAllAt).getTime()) {
+    // Check if user was globally logged out across all devices (e.g. password changed or device limit exceeded)
+    const logoutSec = user.lastLoggedOutAllAt ? Math.floor(new Date(user.lastLoggedOutAllAt).getTime() / 1000) : 0;
+    if (logoutSec && decoded.iat && decoded.iat < logoutSec) {
       return res.status(401).json({
         error: 'token_revoked',
         message: 'Session has been logged out across all devices. Please log in again.',

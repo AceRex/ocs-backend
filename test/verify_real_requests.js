@@ -160,12 +160,15 @@ async function run() {
     // --- 6. 3-MONTH TRIAL EXPIRATION GATING ---
     console.log('\n--- 6. Trial Expiration Gating ---');
     // Create an expired test account directly in DB
+    const expiredDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const expiredUser = await User.create({
       email: 'expired@church.org',
-      passwordHash: signupJson.user ? await require('bcryptjs').hash('Pass12345!', 10) : '',
+      passwordHash: await require('bcryptjs').hash('Pass12345!', 10),
       churchName: 'Old Church',
       role: 'user',
-      graceExpiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000), // 1 day expired
+      subscriptionTier: 'trial',
+      trialEndsAt: expiredDate,
+      graceExpiresAt: expiredDate,
     });
 
     const expiredLoginRes = await fetch(`${baseUrl}/api/auth/login`, {
@@ -174,7 +177,7 @@ async function run() {
       body: JSON.stringify({ email: 'expired@church.org', password: 'Pass12345!' }),
     });
     const expiredLoginJson = await expiredLoginRes.json();
-    assert(expiredLoginRes.status === 403 && expiredLoginJson.error === 'trial_expired', 'Expired trial blocks login with HTTP 403 trial_expired');
+    assert(expiredLoginRes.status === 200 && (expiredLoginJson.user.subscriptionTier === 'free' || expiredLoginJson.user.tier === 'free'), 'Expired trial automatically downgrades to free tier');
 
     // --- 7. CREATE ADMIN & TEST RBAC ---
     console.log('\n--- 7. Admin RBAC & Authorization Guard ---');

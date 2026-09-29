@@ -42,7 +42,7 @@ function rateLimiter({
   allRateLimitStores.add(store);
 
   return (req, res, next) => {
-    const ip = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown-ip';
+    const ip = req.ip || (typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'].split(',')[0].trim() : null) || req.socket?.remoteAddress || 'unknown-ip';
     const now = Date.now();
 
     let record = store.get(ip);
@@ -77,7 +77,7 @@ const loginAttemptTracker = {
   lockoutMs: 15 * 60 * 1000, // 15 minutes lockout
 
   getKey(req) {
-    return req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown-ip';
+    return req.ip || (typeof req.headers['x-forwarded-for'] === 'string' ? req.headers['x-forwarded-for'].split(',')[0].trim() : null) || req.socket?.remoteAddress || 'unknown-ip';
   },
 
   isLocked(req) {

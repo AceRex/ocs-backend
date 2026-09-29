@@ -18,6 +18,8 @@ const {
 const { connectToDatabase } = require("../config/db");
 
 const { uploadToCloudinary, deleteFromCloudinary } = require("../config/cloudinary");
+const { OAuth2Client } = require("google-auth-library");
+const googleOAuthClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const router = express.Router();
 
@@ -436,20 +438,56 @@ const handleGoogleAuth = async (req, res, next) => {
     await connectToDatabase();
     let { email, name, avatarUrl, credential, googleId } = req.body;
 
-    // If Google JWT credential is provided from Google Identity Services, decode it
+    // Cryptographically verify Google JWT credential token if provided
     if (credential && typeof credential === "string") {
-      try {
-        const parts = credential.split(".");
-        if (parts.length === 3) {
-          const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
-          if (payload.email) email = payload.email;
-          if (payload.name) name = payload.name;
-          if (payload.picture) avatarUrl = payload.picture;
-          if (payload.sub) googleId = payload.sub;
+      // In automated test environment, permit mock signed tokens
+      if (process.env.NODE_ENV === "test" && credential.startsWith("test-token-")) {
+        try {
+          const parts = credential.split(".");
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
+            if (payload.email) email = payload.email;
+            if (payload.name) name = payload.name;
+            if (payload.picture) avatarUrl = payload.picture;
+            if (payload.sub) googleId = payload.sub;
+          }
+        } catch (_) {}
+      } else {
+        try {
+          const ticket = await googleOAuthClient.verifyIdToken({
+            idToken: credential,
+            audience: process.env.GOOGLE_CLIENT_ID || undefined,
+          });
+          const payload = ticket.getPayload();
+          if (!payload || !payload.email) {
+            return res.status(401).json({
+              error: "invalid_google_credential",
+              message: "Google credential payload does not contain verified email",
+            });
+          }
+          if (!payload.email_verified) {
+            return res.status(401).json({
+              error: "unverified_google_email",
+              message: "Google email address is not verified",
+            });
+          }
+          email = payload.email;
+          name = payload.name || payload.given_name || email.split("@")[0];
+          avatarUrl = payload.picture || "";
+          googleId = payload.sub;
+        } catch (err) {
+          return res.status(401).json({
+            error: "invalid_google_credential",
+            message: `Google token verification failed: ${err.message}`,
+          });
         }
-      } catch (e) {
-        console.warn("[Google Auth] Failed to parse credential payload:", e.message);
       }
+    } else if (process.env.NODE_ENV !== "test") {
+      // In production and live environments, raw unverified email payloads are rejected
+      return res.status(400).json({
+        error: "missing_google_credential",
+        message: "Google ID token credential is required for authentication",
+      });
     }
 
     if (!email || !EMAIL_REGEX.test(email)) {
@@ -905,11 +943,15 @@ router.post("/profile/password", authMiddleware, async (req, res, next) => {
     }
 
     userWithHash.passwordHash = await bcrypt.hash(newPassword, 10);
+    userWithHash.lastLoggedOutAllAt = new Date();
     await userWithHash.save();
+
+    const { token: newToken } = signToken(userWithHash);
 
     res.json({
       success: true,
       message: "Password changed successfully",
+      token: newToken,
     });
   } catch (err) {
     next(err);
@@ -973,6 +1015,17 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
     const validTiers = ["free", "trial", "mini", "standard", "large", "premium"];
     if (!tier || !validTiers.includes(tier)) {
       return res.status(400).json({ error: "invalid_tier", message: "Invalid subscription tier requested" });
+    }
+
+    const paidTiers = ["mini", "standard", "large", "premium"];
+    const isUserAdmin = req.user.role === "admin" || req.user.role === "super_admin";
+
+    // Non-admin users cannot self-assign paid plans without completing payment
+    if (paidTiers.includes(tier) && !isUserAdmin) {
+      return res.status(403).json({
+        error: "payment_required",
+        message: `Upgrades to the ${tier.toUpperCase()} tier require payment checkout. Please complete checkout or contact support.`,
+      });
     }
 
     const user = await User.findById(userId);
@@ -1064,6 +1117,18 @@ router.post("/profile/subscription/pay", authMiddleware, async (req, res, next) 
     await connectToDatabase();
     const userId = req.user.id || req.user._id;
     const { tier = "standard", billingCycle = "semi-annual", paymentMethod = "card", transactionReference } = req.body;
+
+    const validTiers = ["mini", "standard", "large", "premium"];
+    if (!validTiers.includes(tier)) {
+      return res.status(400).json({ error: "invalid_tier", message: "Invalid subscription tier for payment" });
+    }
+
+    if (process.env.NODE_ENV === "production" && (!transactionReference || transactionReference.length < 8 || transactionReference.startsWith("TX-"))) {
+      return res.status(400).json({
+        error: "invalid_transaction",
+        message: "A valid payment gateway transaction reference is required",
+      });
+    }
 
     const user = await User.findById(userId);
     if (!user) {

@@ -23,4 +23,14 @@ describe('CORS Configuration & Desktop App Headerless Requests', () => {
     expect(res.headers['access-control-allow-origin']).toBe('https://churchocs.com');
     expect(res.headers['access-control-allow-credentials']).toBe('true');
   });
+
+  it('rejects preflight from untrusted origin with 403 and does not reflect credentials', async () => {
+    const res = await request(app)
+      .options('/api/auth/validate-token')
+      .set('Origin', 'https://malicious-attacker.com')
+      .expect(403);
+
+    expect(res.headers['access-control-allow-origin']).toBe('null');
+    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+  });
 });

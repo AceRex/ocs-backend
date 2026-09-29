@@ -1,11 +1,29 @@
 const { Server } = require('socket.io');
+const { verifyToken } = require('./jwt');
 
 let io = null;
 
 function initSocket(httpServer) {
   io = new Server(httpServer, {
     cors: {
-      origin: '*',
+      origin: (origin, callback) => {
+        // Allow mobile/desktop (undefined origin) or valid OCS domains
+        if (!origin) return callback(null, true);
+        const allowedPatterns = [
+          /^https:\/\/(www\.)?churchocs\.com$/,
+          /^https:\/\/ocs-web-three\.vercel\.app$/,
+          /^https:\/\/ocs-web-three(-[a-z0-9-]+)?\.vercel\.app$/,
+          /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,
+          /^capacitor:\/\/localhost$/,
+          /^ionic:\/\/localhost$/,
+        ];
+        const isAllowed = allowedPatterns.some((p) => p.test(origin));
+        if (isAllowed) {
+          callback(null, true);
+        } else {
+          callback(new Error('CORS origin denied for WebSocket'));
+        }
+      },
       methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
       credentials: true,
     },
@@ -13,8 +31,31 @@ function initSocket(httpServer) {
   });
 
   io.on('connection', (socket) => {
-    socket.on('join:admin', () => {
-      socket.join('admin-room');
+    socket.on('join:admin', (data) => {
+      try {
+        const token =
+          (typeof data === 'string' ? data : data?.token) ||
+          socket.handshake.auth?.token ||
+          socket.handshake.headers?.authorization?.replace(/^Bearer\s+/i, '');
+
+        if (!token) {
+          socket.emit('error', { error: 'unauthorized', message: 'Authentication token required for admin room' });
+          return;
+        }
+
+        const decoded = verifyToken(token);
+        const role = decoded?.role;
+
+        if (role !== 'admin' && role !== 'super_admin' && role !== 'church_admin') {
+          socket.emit('error', { error: 'forbidden', message: 'Admin role required to join admin room' });
+          return;
+        }
+
+        socket.join('admin-room');
+        socket.emit('joined:admin', { success: true, room: 'admin-room' });
+      } catch (err) {
+        socket.emit('error', { error: 'invalid_token', message: 'Token verification failed for admin room' });
+      }
     });
   });
 

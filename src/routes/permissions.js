@@ -50,7 +50,7 @@ async function ensurePermissionsSeeded() {
 /**
  * GET /api/permissions & /api/admin/permissions
  */
-router.get("/", async (req, res, next) => {
+router.get("/", authMiddleware, async (req, res, next) => {
   try {
     await connectToDatabase();
     await ensurePermissionsSeeded();

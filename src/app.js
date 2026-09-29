@@ -12,8 +12,8 @@ const suggestionRoutes = require('./routes/suggestions');
 
 const app = express();
 
-// Trust proxy headers for IP resolution in Netlify / Cloudflare / Load Balancers
-app.set('trust proxy', true);
+// Trust first upstream proxy header (Netlify / Cloudflare / Load Balancers) to prevent IP spoofing
+app.set('trust proxy', 1);
 
 // Middleware stack
 app.use(corsMiddleware);
