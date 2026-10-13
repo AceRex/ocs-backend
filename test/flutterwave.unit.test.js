@@ -5,8 +5,9 @@ describe('Flutterwave payment verification', () => {
   test('accepts a verified matching transaction', () => expect(matchesPayment(transaction, payment, 'buyer@example.com', 42)).toBe(true));
   test.each([
     ['status', 'failed'], ['tx_ref', 'attacker-reference'], ['currency', 'USD'],
-    ['amount', 1], ['amount', 'NaN'], ['id', 99], ['customer', { email: 'attacker@example.com' }],
+    ['amount', 1], ['amount', 'NaN'], ['id', 99],
   ])('rejects mismatched %s', (field, value) => expect(matchesPayment({ ...transaction, [field]: value }, payment, 'buyer@example.com', 42)).toBe(false));
+  test('allows a different payer email when the saved reference, transaction, currency and amount match', () => expect(matchesPayment({ ...transaction, customer: { email: 'other-payer@example.com' } }, payment, 'buyer@example.com', 42)).toBe(true));
   test('requires configured prices and currency', () => {
     delete process.env.FLW_SECRET_KEY;
     expect(() => paymentConfig('standard', 'monthly')).toThrow('not configured');

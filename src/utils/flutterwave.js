@@ -27,15 +27,13 @@ async function flutterwave(path, body) {
   return result.data;
 }
 
-function matchesPayment(transaction, payment, email, transactionId) {
+function matchesPayment(transaction, payment, _email, transactionId) {
   return transaction.status === 'successful'
     && String(transaction.id) === String(transactionId)
     && transaction.tx_ref === payment.reference
     && transaction.currency === payment.currency
     && Number.isFinite(Number(transaction.amount))
-    && Number(transaction.amount) >= payment.amount
-    && typeof transaction.customer?.email === 'string'
-    && transaction.customer.email.toLowerCase() === email.toLowerCase();
+    && Number(transaction.amount) >= payment.amount;
 }
 
 function validWebhook(hash) {
