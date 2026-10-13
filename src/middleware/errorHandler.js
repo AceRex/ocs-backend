@@ -51,7 +51,7 @@ function errorHandler(err, req, res, next) {
   const status = err.status || err.statusCode || 500;
   const response = {
     error: err.error || 'server_error',
-    message: err.message || 'An unexpected error occurred',
+    message: status >= 500 && env.NODE_ENV !== 'development' ? 'An unexpected error occurred' : (err.message || 'An unexpected error occurred'),
   };
 
   if (env.NODE_ENV === 'development') {

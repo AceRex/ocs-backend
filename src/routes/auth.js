@@ -453,6 +453,9 @@ const handleGoogleAuth = async (req, res, next) => {
           }
         } catch (_) {}
       } else {
+        if (!process.env.GOOGLE_CLIENT_ID) {
+          return res.status(503).json({ error: "google_auth_unavailable", message: "Google sign-in is not configured" });
+        }
         try {
           const ticket = await googleOAuthClient.verifyIdToken({
             idToken: credential,
@@ -1020,6 +1023,10 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
     const paidTiers = ["mini", "standard", "large", "premium"];
     const isUserAdmin = req.user.role === "admin" || req.user.role === "super_admin";
 
+    if (!isUserAdmin && tier === "trial") {
+      return res.status(403).json({ error: "trial_reset_forbidden", message: "Trial periods cannot be renewed through self-service." });
+    }
+
     // Non-admin users cannot self-assign paid plans without completing payment
     if (paidTiers.includes(tier) && !isUserAdmin) {
       return res.status(403).json({
@@ -1041,8 +1048,9 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
     if (tier === "free") {
       durationDays = 30; // 1 month
       user.subscriptionExpiresAt = null;
-      user.trialEndsAt = new Date(new Date().getTime() + durationDays * 24 * 60 * 60 * 1000);
-      user.graceExpiresAt = user.trialEndsAt;
+      // Preserve the existing expiry on self-service downgrades.
+      if (isUserAdmin) user.trialEndsAt = new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000);
+      if (isUserAdmin) user.graceExpiresAt = user.trialEndsAt;
     } else if (tier === "trial") {
       durationDays = 60; // 2 months
       const activationDate = new Date();
@@ -1112,85 +1120,13 @@ router.post("/profile/subscription/change", authMiddleware, async (req, res, nex
  * POST /auth/profile/subscription/pay
  * Payment processing & activation
  */
-router.post("/profile/subscription/pay", authMiddleware, async (req, res, next) => {
-  try {
-    await connectToDatabase();
-    const userId = req.user.id || req.user._id;
-    const { tier = "standard", billingCycle = "semi-annual", paymentMethod = "card", transactionReference } = req.body;
-
-    const validTiers = ["mini", "standard", "large", "premium"];
-    if (!validTiers.includes(tier)) {
-      return res.status(400).json({ error: "invalid_tier", message: "Invalid subscription tier for payment" });
-    }
-
-    if (process.env.NODE_ENV === "production" && (!transactionReference || transactionReference.length < 8 || transactionReference.startsWith("TX-"))) {
-      return res.status(400).json({
-        error: "invalid_transaction",
-        message: "A valid payment gateway transaction reference is required",
-      });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ error: "user_not_found", message: "User not found" });
-    }
-
-    const previousPlan = user.subscriptionTier || "trial";
-    const durationDays = billingCycle === "annually" ? 365 : (billingCycle === "semi-annual" || billingCycle === "semi_annually" ? 180 : 30);
-    const activationDate = new Date();
-    const newExpiry = new Date(activationDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
-
-    user.subscriptionTier = tier;
-    user.subscriptionStartedAt = activationDate;
-    user.subscriptionExpiresAt = newExpiry;
-    user.graceExpiresAt = newExpiry;
-
-    const quotas = User.PLAN_QUOTAS?.[tier] || { maxDesktops: 1, maxMobileUsers: 3 };
-    user.licenseQuotas.maxDesktops = quotas.maxDesktops;
-    user.licenseQuotas.maxMobileUsers = quotas.maxMobileUsers;
-
-    await user.save();
-
-    const remainingDays = typeof user.getRemainingDays === "function" ? user.getRemainingDays() : (typeof user.getTrialRemainingDays === "function" ? user.getTrialRemainingDays() : 30);
-    const ref = transactionReference || `TX-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    try {
-      await SubscriptionHistory.create({
-        userId: user._id,
-        userName: user.name || "",
-        userEmail: user.email,
-        churchName: user.churchName || "",
-        previousPlan,
-        newPlan: user.subscriptionTier,
-        upgradedAt: activationDate,
-        durationMonths: Math.round(durationDays / 30),
-        daysRemaining: remainingDays,
-        newExpiryDate: newExpiry,
-        changedBy: {
-          id: user._id.toString(),
-          name: user.name || "Customer",
-          email: user.email,
-          role: user.role || "user",
-        },
-        action: "payment_activation",
-        reason: `Payment confirmed for ${tier.toUpperCase()} (${billingCycle})`,
-        billingCycle,
-        paymentMethod,
-        transactionReference: ref,
-      });
-    } catch (histErr) {
-      console.warn("Failed to log SubscriptionHistory:", histErr);
-    }
-
-    res.json({
-      success: true,
-      message: "Payment confirmed! Your subscription is now active.",
-      reference: ref,
-      user: formatUserResponse(user),
-    });
-  } catch (err) {
-    next(err);
-  }
+router.post("/profile/subscription/pay", authMiddleware, (_req, res) => {
+  // Client-supplied references are not proof of payment. Activate plans only
+  // after a provider verifies amount, currency, customer and replay protection.
+  return res.status(503).json({
+    error: "payment_unavailable",
+    message: "Online payments are not configured. Please contact support.",
+  });
 });
 
 const handleGetAdminUsers = async (req, res, next) => {

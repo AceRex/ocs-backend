@@ -15,6 +15,14 @@ const app = express();
 // Trust first upstream proxy header (Netlify / Cloudflare / Load Balancers) to prevent IP spoofing
 app.set('trust proxy', 1);
 
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
+
 // Middleware stack
 app.use(corsMiddleware);
 app.use(express.json({ limit: '1mb' }));
@@ -33,6 +41,8 @@ app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
 
 // Mount API routes under both /api and root to handle direct and proxied calls cleanly
+app.use('/api', require('./routes/payments'));
+app.use('/', require('./routes/payments'));
 app.use('/api/auth', authRoutes);
 app.use('/auth', authRoutes);
 

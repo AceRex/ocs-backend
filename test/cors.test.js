@@ -30,7 +30,7 @@ describe('CORS Configuration & Desktop App Headerless Requests', () => {
       .set('Origin', 'https://malicious-attacker.com')
       .expect(403);
 
-    expect(res.headers['access-control-allow-origin']).toBe('null');
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
     expect(res.headers['access-control-allow-credentials']).toBeUndefined();
   });
 });

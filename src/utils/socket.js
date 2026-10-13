@@ -1,5 +1,32 @@
 const { Server } = require('socket.io');
 const { verifyToken } = require('./jwt');
+const User = require('../models/User');
+const RevokedToken = require('../models/RevokedToken');
+const { connectToDatabase } = require('../config/db');
+
+async function currentAdmin(token) {
+  const decoded = verifyToken(token);
+  await connectToDatabase();
+  if (decoded.jti && await RevokedToken.exists({ tokenId: decoded.jti })) throw new Error('Revoked token');
+  const user = await User.findById(decoded.userId);
+  if (!user || !['admin', 'super_admin'].includes(user.role)) throw new Error('Admin access required');
+  if (user.lastLoggedOutAllAt && (!decoded.iat || decoded.iat * 1000 <= new Date(user.lastLoggedOutAllAt).getTime())) throw new Error('Logged out');
+  if (user.graceExpiresAt && Date.now() > new Date(user.graceExpiresAt).getTime()) throw new Error('Expired account');
+  return user;
+}
+
+async function emitToCurrentAdmins(event, payload) {
+  if (!io) return;
+  const sockets = await io.in('admin-room').fetchSockets();
+  await Promise.all(sockets.map(async (socket) => {
+    try {
+      await currentAdmin(socket.data.adminToken);
+      socket.emit(event, payload);
+    } catch (_) {
+      socket.leave('admin-room');
+    }
+  }));
+}
 
 let io = null;
 
@@ -9,15 +36,7 @@ function initSocket(httpServer) {
       origin: (origin, callback) => {
         // Allow mobile/desktop (undefined origin) or valid OCS domains
         if (!origin) return callback(null, true);
-        const allowedPatterns = [
-          /^https:\/\/(www\.)?churchocs\.com$/,
-          /^https:\/\/ocs-web-three\.vercel\.app$/,
-          /^https:\/\/ocs-web-three(-[a-z0-9-]+)?\.vercel\.app$/,
-          /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/,
-          /^capacitor:\/\/localhost$/,
-          /^ionic:\/\/localhost$/,
-        ];
-        const isAllowed = allowedPatterns.some((p) => p.test(origin));
+        const isAllowed = require('../middleware/cors').isOriginAllowed(origin);
         if (isAllowed) {
           callback(null, true);
         } else {
@@ -31,7 +50,7 @@ function initSocket(httpServer) {
   });
 
   io.on('connection', (socket) => {
-    socket.on('join:admin', (data) => {
+    socket.on('join:admin', async (data) => {
       try {
         const token =
           (typeof data === 'string' ? data : data?.token) ||
@@ -43,14 +62,8 @@ function initSocket(httpServer) {
           return;
         }
 
-        const decoded = verifyToken(token);
-        const role = decoded?.role;
-
-        if (role !== 'admin' && role !== 'super_admin' && role !== 'church_admin') {
-          socket.emit('error', { error: 'forbidden', message: 'Admin role required to join admin room' });
-          return;
-        }
-
+        await currentAdmin(token);
+        socket.data.adminToken = token;
         socket.join('admin-room');
         socket.emit('joined:admin', { success: true, room: 'admin-room' });
       } catch (err) {
@@ -94,8 +107,7 @@ function emitAdminNotification(payload) {
 
   if (!io) return;
   try {
-    io.emit('admin:notification', payload);
-    io.to('admin-room').emit('admin:notification', payload);
+    emitToCurrentAdmins('admin:notification', payload).catch((err) => console.error('[WebSocket] notification dispatch failed:', err.message));
   } catch (err) {
     console.error('[WebSocket] emitAdminNotification error:', err.message);
   }
@@ -104,8 +116,7 @@ function emitAdminNotification(payload) {
 function emitAdminMetrics(payload) {
   if (!io) return;
   try {
-    io.emit('admin:metrics', payload);
-    io.to('admin-room').emit('admin:metrics', payload);
+    emitToCurrentAdmins('admin:metrics', payload).catch((err) => console.error('[WebSocket] metrics dispatch failed:', err.message));
   } catch (err) {
     console.error('[WebSocket] emitAdminMetrics error:', err.message);
   }

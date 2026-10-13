@@ -25,12 +25,12 @@ const env = {
     return parseInt(process.env.GRACE_PERIOD_MONTHS || "3", 10);
   },
   get FRONTEND_URL() {
-    return process.env.FRONTEND_URL || "https://ocs-web-three.vercel.app";
+    return process.env.FRONTEND_URL || "http://localhost:5173";
   },
   get NOTIFICATION_EMAILS() {
     return (
       process.env.NOTIFICATION_EMAILS ||
-      "johnsonare0722@gmail.com, waveiosoftware@gmail.com"
+      ""
     );
   },
   get RESEND_API_KEY() {
@@ -71,6 +71,17 @@ const env = {
     );
   },
 };
+
+if (process.env.NODE_ENV === "production") {
+  for (const key of ["MONGODB_URI", "FRONTEND_URL"]) {
+    if (!process.env[key]) throw new Error(`FATAL: ${key} is required in production`);
+  }
+  const frontend = new URL(process.env.FRONTEND_URL);
+  if (frontend.protocol !== "https:") throw new Error("FATAL: FRONTEND_URL must use HTTPS in production");
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32 || process.env.JWT_SECRET.includes("REQUIRED_GENERATE")) {
+    throw new Error("FATAL: JWT_SECRET must be a strong secret of at least 32 characters");
+  }
+}
 
 // Validate critical secrets at startup: refuse to start without JWT_SECRET
 if (!process.env.JWT_SECRET) {

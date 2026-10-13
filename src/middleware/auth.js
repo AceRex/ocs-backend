@@ -78,7 +78,7 @@ async function authMiddleware(req, res, next) {
     }
 
     // Re-check grace period on every request (Task 3.3 requirement)
-    if (user.graceExpiresAt && new Date() > new Date(user.graceExpiresAt)) {
+    if (!req.allowExpiredSubscription && user.graceExpiresAt && new Date() > new Date(user.graceExpiresAt)) {
       return res.status(403).json({
         error: 'trial_expired',
         message: 'Your 3-month trial grace period has expired. Please contact support.',

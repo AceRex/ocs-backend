@@ -19,7 +19,7 @@ function signToken(user, options = {}) {
     email: user.email,
     role: user.role || 'user',
     org: user.churchName,
-    tier: 'standard',
+    tier: user.subscriptionTier || 'trial',
     jti,
   };
 
@@ -44,7 +44,7 @@ function verifyToken(token) {
   if (!secret) {
     throw new Error('JWT_SECRET is not configured');
   }
-  return jwt.verify(token, secret);
+  return jwt.verify(token, secret, { algorithms: ["HS256"] });
 }
 
 /**

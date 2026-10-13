@@ -391,6 +391,7 @@ describe("Auth Endpoints (/api/auth)", () => {
 
   describe("Security Enhancements & Vulnerability Mitigations", () => {
     it("rejects Google SSO login with invalid/forged credential token", async () => {
+      process.env.GOOGLE_CLIENT_ID = "test-client-id.apps.googleusercontent.com";
       const res = await request(app)
         .post("/api/auth/google")
         .send({

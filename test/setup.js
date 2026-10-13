@@ -3,7 +3,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test_jwt_secret_key_12345678
 process.env.GRACE_PERIOD_MONTHS = '3';
 process.env.FRONTEND_URL = 'https://churchocs.com';
 
-const { MongoMemoryServer } = require('mongodb-memory-server');
+const { MongoMemoryReplSet } = require('mongodb-memory-server');
 const mongoose = require('mongoose');
 
 jest.setTimeout(120000);
@@ -12,10 +12,9 @@ let mongoServer;
 
 beforeAll(async () => {
 
-  mongoServer = await MongoMemoryServer.create({
-    instance: {
-      launchTimeout: 30000,
-    },
+  mongoServer = await MongoMemoryReplSet.create({
+    replSet: { count: 1, storageEngine: "wiredTiger" },
+    instanceOpts: [{ launchTimeout: 30000 }],
   });
   const uri = mongoServer.getUri();
   process.env.MONGODB_URI = uri;
