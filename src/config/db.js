@@ -22,6 +22,12 @@ async function connectToDatabase(uri = env.MONGODB_URI) {
     const opts = {
       bufferCommands: false,
       maxPoolSize: 10,
+      minPoolSize: 0,
+      maxIdleTimeMS: 60000,
+      connectTimeoutMS: 10000,
+      socketTimeoutMS: 20000,
+      retryReads: true,
+      retryWrites: true,
       serverSelectionTimeoutMS: 5000,
     };
 

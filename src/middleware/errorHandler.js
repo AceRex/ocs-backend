@@ -47,14 +47,21 @@ function errorHandler(err, req, res, next) {
     });
   }
 
+  // Database connectivity failures are recoverable and must not expose internals.
+  if (['MongoNetworkError', 'MongoNetworkTimeoutError', 'MongoServerSelectionError', 'MongooseServerSelectionError'].includes(err.name)) {
+    res.setHeader('Retry-After', '5');
+    return res.status(503).json({ error: 'database_unavailable', message: 'The service is temporarily unavailable. Please try again shortly.' });
+  }
+
+  const development = env.NODE_ENV === 'development' && !process.env.VERCEL && !process.env.NETLIFY;
   // Default server error
   const status = err.status || err.statusCode || 500;
   const response = {
     error: err.error || 'server_error',
-    message: status >= 500 && env.NODE_ENV !== 'development' ? 'An unexpected error occurred' : (err.message || 'An unexpected error occurred'),
+    message: status >= 500 && !development ? 'An unexpected error occurred' : (err.message || 'An unexpected error occurred'),
   };
 
-  if (env.NODE_ENV === 'development') {
+  if (development) {
     response.stack = err.stack;
   }
 
