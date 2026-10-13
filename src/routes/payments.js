@@ -94,7 +94,7 @@ router.post('/payments/checkout', limiter, paymentAuth, async (req, res, next) =
       customizations: { title: 'wave.io subscription' },
     });
     const url = new URL(checkout.link);
-    if (url.protocol !== 'https:' || url.hostname !== 'checkout.flutterwave.com') throw new Error('Invalid checkout URL');
+    if (url.protocol !== 'https:' || !['checkout.flutterwave.com', ...(process.env.FLW_SECRET_KEY?.startsWith('FLWSECK_TEST-') ? ['checkout-v2.dev-flutterwave.com'] : [])].includes(url.hostname)) throw new Error('Invalid checkout URL');
     res.json({ success: true, checkoutUrl: url.href, reference });
   } catch (err) { next(err); }
 });
