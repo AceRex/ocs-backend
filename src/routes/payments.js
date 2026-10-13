@@ -9,6 +9,7 @@ const { connectToDatabase } = require('../config/db');
 const { authMiddleware } = require('../middleware/auth');
 const { rateLimiter } = require('../middleware/rateLimiter');
 const { paymentConfig, flutterwave, matchesPayment, validWebhook } = require('../utils/flutterwave');
+const { pricing, verifyQuote } = require('../utils/local-pricing');
 const router = express.Router();
 const limiter = rateLimiter({ max: 20 });
 
@@ -64,24 +65,14 @@ async function activate(reference, transactionId, owner) {
   return { success: true, reference };
 }
 
-router.get('/payments/pricing', (_req, res, next) => {
-  try {
-    const plans = {};
-    for (const tier of ['mini', 'standard', 'large', 'premium']) {
-      plans[tier] = {};
-      for (const cycle of ['monthly', 'semi-annual', 'annually']) {
-        try { plans[tier][cycle] = paymentConfig(tier, cycle).amount; }
-        catch (err) { if (err.status !== 503) throw err; }
-      }
-    }
-    res.json({ currency: process.env.FLW_CURRENCY || null, plans });
-  } catch (err) { next(err); }
+router.get('/payments/pricing', async (req, res, next) => {
+  try { res.json(await pricing(req)); } catch (err) { next(err); }
 });
 
 router.post('/payments/checkout', limiter, paymentAuth, async (req, res, next) => {
   try {
     const { tier, billingCycle = 'monthly' } = req.body;
-    const { amount, currency } = paymentConfig(tier, billingCycle);
+    const { amount, currency } = req.body.quote ? verifyQuote(req.body.quote, tier, billingCycle) : paymentConfig(tier, billingCycle);
     const redirect = new URL('/profile', env.FRONTEND_URL);
     if (redirect.protocol !== 'https:') throw Object.assign(new Error('Checkout requires a public HTTPS frontend'), { status: 503 });
     await connectToDatabase();
